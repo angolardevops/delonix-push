@@ -38,6 +38,10 @@ impl<K: Hash + Eq, V: Clone> Ttl<K, V> {
         m.insert(k, (v, Instant::now()));
     }
 
+    pub fn remove(&self, k: &K) {
+        self.map.lock().unwrap().remove(k);
+    }
+
     pub fn clear(&self) {
         self.map.lock().unwrap().clear();
     }

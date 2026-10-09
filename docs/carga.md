@@ -35,6 +35,28 @@ Outros números (medidos antes do commit em grupo, a memória não mudou):
 | 10 000 ligações · 1 000 msg/s · 15 s | 100 % entregues · p50 1,7 ms · p99 2,8 ms · RSS 123 MiB |
 | 25 000 ligações abertas | todas ligadas em ~12 s; RSS ≈ 1 GiB |
 
+## Várias instâncias (escala horizontal) — resultado INCONCLUSIVO
+
+Ensaio: 1, 2 e 4 instâncias do servidor sobre a MESMA base, 2 000 ligações espalhadas por elas, cada pedido de envio a cair numa
+instância à sorte (como atrás de um balanceador: com K instâncias, K-1 em cada K envios tocam uma instância que não tem a ligação
+do aparelho). O que se vê, em corridas ruidosas (a máquina é partilhada: a mesma configuração de 1 instância deu p50 de 5,6 ms
+numa corrida e de 71 ms noutra):
+
+- **Capacidade:** com 4 instâncias aceitou-se ~3 600 msg/s a 4 000 oferecidas (90 %), contra ~3 000/s com 1 instância. Parece subir
+  um pouco, longe de linear, e o ruído da máquina é do mesmo tamanho que a diferença.
+- **Latência:** com mais de uma instância o p50 fica em **200–500 ms** (com 1 instância, 5–25 ms). Este piso **não foi explicado**.
+- **Hipóteses testadas e descartadas** (cada uma foi uma alteração + nova medição): pool de ligações por instância (3, 5 ou 10),
+  `NOTIFY` do Postgres contra o pub/sub do Redis (o Redis não mudou a latência), o worker de reenvio (desligado), a consulta extra
+  que o destino fazia por aviso (o aviso passou a levar o aparelho), e o tamanho dos lotes (espera de 1, 5 e 10 ms).
+- **Uma corrida de 1 instância com 5 ms de espera colapsou** (4 436 aceites, 936 erros). Não se repetiu nem se explicou: trata-se como
+  ruído até haver repetição.
+
+O que ficou (útil por si, mesmo sem resolver o piso de latência): o barramento entre instâncias em Redis (`PUSH_REDIS_URL`; sem ele,
+`LISTEN/NOTIFY`), o aviso que leva `<mensagem>@<aparelho>` em lote, a cache de presença (2 s) e de aparelhos validados (3 s), e
+`PUSH_BATCH_LINGER_MS`. **Próximo passo para fechar isto:** métricas de latência POR ETAPA no servidor (gravação, rota, aviso,
+entrega local, ack) para ver onde se gastam os 200–500 ms, e repetir sobre um Postgres e uma rede que não sejam os deste ambiente.
+**Não se deve anunciar escala horizontal enquanto isto não estiver resolvido.**
+
 ## O que a medição apanhou e foi corrigido
 
 1. **Memória por ligação:** ~190 KB (buffers de 128 KiB de leitura e de escrita do WebSocket por omissão) → ~38 KB com buffers de
@@ -59,7 +81,7 @@ Outros números (medidos antes do commit em grupo, a memória não mudou):
 
 ## O que NÃO está medido
 
-- **Várias instâncias** sob carga (o código tem presença e `NOTIFY`, testado funcionalmente, mas a escala horizontal não foi medida).
+- **Várias instâncias:** medidas mas **inconclusivas** (ver acima).
 - **Rede real** (latência, perdas, reconexões em massa), **TLS**, e dispositivos reais (bateria, Doze).
 - **Postgres em produção** (nativo, com rede real, ajustado): o teto de ~2 500–3 300 msg/s é deste ambiente.
 - **FCM/APNs** reais e o seu débito.

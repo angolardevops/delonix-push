@@ -114,3 +114,45 @@ async fn a_instancia_nao_entrega_o_que_nao_e_para_ela(db: PgPool) {
     assert_eq!(ws.recv(5).await.unwrap()["payload"], "uma-vez");
     assert!(ws.recv(1).await.is_none(), "só uma vez dentro do lease");
 }
+
+#[sqlx::test]
+async fn com_redis_o_barramento_entre_instancias_entrega_em_lote(db: PgPool) {
+    let a = app_redis(db.clone()).await;
+    let b = app_redis(db).await;
+    let (_p, key) = a.project("meet").await;
+    let (dev, secret) = a.device(&key, "android").await;
+    // O aparelho liga-se à B; os pedidos entram pela A: o aviso vai pelo Redis, não pelo NOTIFY do Postgres.
+    let mut ws = b.ws(&secret).await;
+    assert!(
+        until(|| async {
+            delonix_push::store::presence_node(&a.st.db, dev.parse().unwrap())
+                .await
+                .unwrap()
+                == Some(b.st.node_id)
+        })
+        .await
+    );
+    // Dá tempo ao subscritor de B de se registar no canal antes de a A publicar.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let mut ids = vec![];
+    for i in 0..20 {
+        let r: serde_json::Value = a
+            .send(&key, json!({"device_id": dev, "payload": {"n": i}}))
+            .await
+            .json()
+            .await
+            .unwrap();
+        ids.push(r["message_ids"][0].as_str().unwrap().to_string());
+    }
+    let mut got = std::collections::HashSet::new();
+    while got.len() < ids.len() {
+        let m = ws
+            .recv(5)
+            .await
+            .expect("a B entregou o que a A recebeu, via Redis");
+        let id = m["id"].as_str().unwrap().to_string();
+        ws.ack(&id).await;
+        got.insert(id);
+    }
+    assert!(ids.iter().all(|i| got.contains(i)));
+}

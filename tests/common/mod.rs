@@ -27,6 +27,23 @@ pub async fn app(db: PgPool, tweak: impl FnOnce(&mut AppState)) -> App {
     };
     let mut st = AppState::new(db, cfg);
     tweak(&mut st);
+    serve(st).await
+}
+
+/// Como `app`, mas com o Redis como barramento entre instâncias e para os limites.
+pub async fn app_redis(db: PgPool) -> App {
+    let cfg = Config {
+        admin_token: ADMIN.into(),
+        ack_timeout: Duration::from_millis(400),
+        ..Config::default()
+    };
+    let mut st = AppState::new(db, cfg);
+    let url = std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:56379".into());
+    st.use_redis(&url).await.expect("Redis de teste");
+    serve(st).await
+}
+
+async fn serve(st: AppState) -> App {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("127.0.0.1:{}", l.local_addr().unwrap().port());
     tokio::spawn(delonix_push::dispatch::run_listener(st.clone()));

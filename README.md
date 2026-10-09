@@ -58,7 +58,9 @@ PUSH_CONSOLE_DIR=$PWD/console/dist cargo run      # o servidor serve a consola e
 | `DATABASE_URL`, `PUSH_BIND` | base e endereço |
 | `PUSH_ADMIN_TOKEN` | plano de operador: criar projectos, ajustar limites (`PUT /admin/v1/projects/{id}/limits`) |
 | `PUSH_SECRET_KEY` | 64 hex: cifra as credenciais FCM/APNs |
-| `PUSH_REDIS_URL` | limites partilhados entre instâncias (sem ela, cada instância conta sozinha) |
+| `PUSH_REDIS_URL` | limites partilhados e barramento entre instâncias (sem ela: limites por instância e `LISTEN/NOTIFY` do Postgres) |
+| `PUSH_BATCH_LINGER_MS` | espera de cada lote de escritas (1 ms por omissão) |
+| `PUSH_WORKER=0` | só para experiências: desliga o reenvio/expiração nesta instância |
 | `PUSH_METRICS_TOKEN` | abre `/metrics` (Prometheus) a quem trouxer o token; vazio = fechado |
 | `PUSH_CONSOLE_OPEN_REGISTRATION=1` | qualquer pessoa pode criar conta na consola |
 | `PUSH_CONSOLE_DIR` | pasta `console/dist`: o servidor serve a consola em `/` |

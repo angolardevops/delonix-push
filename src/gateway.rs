@@ -68,6 +68,7 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
     crate::metrics::Metrics::inc(&st.metrics.ws_opened);
     store::touch_device(&st.db, dev.id).await;
     let _ = store::presence_set(&st.db, dev.id, st.node_id).await;
+    st.presence_cache.put(dev.id, Some(st.node_id));
 
     // Escritor: tudo o que sai passa por aqui.
     let writer = tokio::spawn(async move {

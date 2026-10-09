@@ -10,6 +10,7 @@
 pub mod api;
 pub mod auth;
 pub mod batch;
+pub mod bus;
 pub mod cache;
 pub mod config;
 pub mod console;
@@ -51,13 +52,22 @@ pub struct AppState {
     pub send_permits: Arc<tokio::sync::Semaphore>,
     /// Commit em grupo das escritas do caminho quente (ver `batch`).
     pub batch: Arc<batch::Batchers>,
+    /// Como as instâncias se avisam umas às outras (Redis se configurado, senão o NOTIFY do Postgres).
+    pub bus: Arc<bus::Bus>,
+    /// Que instância tem a ligação de cada aparelho (validade 2 s). Se estiver desactualizada, a instância errada não entrega e
+    /// o worker reencaminha a mensagem no segundo seguinte.
+    /// (projecto, aparelho) já validados no último instante (validade 3 s): poupa uma consulta a cada envio.
+    pub device_cache: Arc<cache::Ttl<(uuid::Uuid, uuid::Uuid), ()>>,
+    pub presence_cache: Arc<cache::Ttl<uuid::Uuid, Option<uuid::Uuid>>>,
 }
 
 impl AppState {
     pub fn new(db: PgPool, cfg: config::Config) -> Self {
         let permits = cfg.max_inflight_sends;
+        let bus = Arc::new(bus::Bus::Postgres);
         Self {
-            batch: Arc::new(batch::Batchers::new(db.clone())),
+            batch: Arc::new(batch::Batchers::new(db.clone(), bus.clone())),
+            bus,
             db,
             node_id: uuid::Uuid::new_v4(),
             cfg: Arc::new(cfg),
@@ -70,6 +80,16 @@ impl AppState {
             limits_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(5))),
             metrics: Arc::default(),
             send_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
+            device_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(3))),
+            presence_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(2))),
         }
+    }
+
+    /// Liga o Redis: limites partilhados entre instâncias e barramento entre instâncias (em vez do NOTIFY do Postgres).
+    pub async fn use_redis(&mut self, url: &str) -> Result<(), redis::RedisError> {
+        self.limiter = Arc::new(limits::Limiter::redis(url).await?);
+        self.bus = Arc::new(bus::Bus::redis(url).await?);
+        self.batch = Arc::new(batch::Batchers::new(self.db.clone(), self.bus.clone()));
+        Ok(())
     }
 }

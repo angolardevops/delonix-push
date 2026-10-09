@@ -11,15 +11,24 @@ DB="push_carga"; PORT=18481
 delonix container exec "$CONT" psql -U "$PGU" -d postgres -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
 delonix container exec "$CONT" psql -U "$PGU" -d postgres -c "CREATE DATABASE $DB" >/dev/null || exit 2
 ulimit -n 1048576 2>/dev/null || true
-DATABASE_URL="postgres://$PGU:$PGP@127.0.0.1:$PGPORT/$DB" PUSH_BIND="127.0.0.1:$PORT" PUSH_ADMIN_TOKEN=admin-carga PUSH_METRICS_TOKEN=met-carga \
-  target/release/delonix-push >/tmp/push-carga.log 2>&1 &
-SRV=$!
-trap 'kill $SRV 2>/dev/null; delonix container exec "$CONT" psql -U "$PGU" -d postgres -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1' EXIT
-for _ in $(seq 50); do [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/healthz)" = 200 ] && break; sleep 0.2; done
-echo "# servidor release (pid $SRV), base $DB, $(nproc) núcleos, $(date -Is)"
+# INSTANCES=K arranca K servidores sobre a MESMA base (portos PORT..PORT+K-1); o gerador espalha-lhes ligações e pedidos.
+K="${INSTANCES:-1}"; PIDS=(); URLS=()
+for i in $(seq 0 $((K-1))); do
+  P=$((PORT+i))
+  DATABASE_URL="postgres://$PGU:$PGP@127.0.0.1:$PGPORT/$DB" PUSH_BIND="127.0.0.1:$P" PUSH_ADMIN_TOKEN=admin-carga PUSH_METRICS_TOKEN=met-carga \
+    target/release/delonix-push >/tmp/push-carga-$i.log 2>&1 &
+  PIDS+=($!); URLS+=("http://127.0.0.1:$P")
+done
+SRV="${PIDS[*]}"
+trap 'for p in "${PIDS[@]}"; do kill $p 2>/dev/null; done; delonix container exec "$CONT" psql -U "$PGU" -d postgres -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1' EXIT
+for i in $(seq 0 $((K-1))); do
+  for _ in $(seq 50); do [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:$((PORT+i))/healthz)" = 200 ] && break; sleep 0.2; done
+done
+IFS=, ; URL_LIST="${URLS[*]}"; PID_LIST="${PIDS[*]}"; unset IFS
+echo "# $K servidor(es) release (pids ${PIDS[*]}), pool ${PUSH_DB_MAX_CONNECTIONS:-10} cada, base $DB, $(nproc) núcleos, $(date -Is)"
 for t in "$@"; do
   IFS=: read -r c r s <<<"$t"
   echo; echo "=== $c ligações · $r msg/s · ${s}s ==="
-  loadtest/target/release/delonix-push-loadtest --url "http://127.0.0.1:$PORT" --admin-token admin-carga --metrics-token met-carga \
-    --conns "$c" --rate "$r" --secs "$s" --server-pid "$SRV"
+  loadtest/target/release/delonix-push-loadtest --url "$URL_LIST" --admin-token admin-carga --metrics-token met-carga \
+    --conns "$c" --rate "$r" --secs "$s" --server-pid "$PID_LIST"
 done

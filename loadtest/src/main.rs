@@ -49,14 +49,16 @@ async fn main() {
             args.insert(k.to_string(), it.next().unwrap_or_default());
         }
     }
-    let url = arg(&args, "url", "http://127.0.0.1:8480");
+    // `--url a,b,c`: várias instâncias. Os aparelhos ligam-se a elas em rotação e cada pedido de envio cai numa delas, como
+    // atrás de um balanceador (com K instâncias, K-1 em cada K envios tocam uma instância que NÃO tem a ligação do aparelho).
+    let urls: Vec<String> = arg(&args, "url", "http://127.0.0.1:8480").split(',').map(|u| u.trim().to_string()).collect();
+    let url = urls[0].clone();
     let admin = arg(&args, "admin-token", "");
     let metrics_token = arg(&args, "metrics-token", "");
     let conns: usize = arg(&args, "conns", "1000").parse().unwrap();
     let rate: u64 = arg(&args, "rate", "200").parse().unwrap();
     let secs: u64 = arg(&args, "secs", "30").parse().unwrap();
-    let server_pid: Option<u32> = args.get("server-pid").and_then(|p| p.parse().ok());
-    let ws_base = url.replacen("http", "ws", 1);
+    let server_pids: Vec<u32> = args.get("server-pid").map(|p| p.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
 
     let http = reqwest::Client::builder().pool_max_idle_per_host(256).timeout(Duration::from_secs(20)).build().unwrap();
 
@@ -96,8 +98,9 @@ async fn main() {
     let failed_connect = Arc::new(AtomicU64::new(0));
     let t1 = Instant::now();
     let sem = Arc::new(tokio::sync::Semaphore::new(128));
-    for (_, secret) in devices.iter().cloned() {
-        let (hist, received, connected, failed, sem, ws_base) = (hist.clone(), received.clone(), connected.clone(), failed_connect.clone(), sem.clone(), ws_base.clone());
+    for (di, (_, secret)) in devices.iter().cloned().enumerate() {
+        let ws_base = urls[di % urls.len()].replacen("http", "ws", 1);
+        let (hist, received, connected, failed, sem) = (hist.clone(), received.clone(), connected.clone(), failed_connect.clone(), sem.clone());
         tokio::spawn(async move {
             let g = sem.acquire().await.unwrap();
             let mut req = format!("{ws_base}/v1/connect").into_client_request().unwrap();
@@ -130,7 +133,8 @@ async fn main() {
     tokio::time::sleep(Duration::from_secs(2)).await; // deixa a presença assentar
 
     // 4. emissão a taxa fixa
-    let stats0 = server_pid.and_then(proc_stats);
+    let sum_stats = |pids: &[u32]| -> Option<(f64, f64)> { if pids.is_empty() { return None; } pids.iter().map(|p| proc_stats(*p)).try_fold((0.0, 0.0), |a, s| s.map(|s| (a.0 + s.0, a.1 + s.1))) };
+    let stats0 = sum_stats(&server_pids);
     let sent = Arc::new(AtomicU64::new(0));
     let accepted = Arc::new(AtomicU64::new(0));
     let throttled = Arc::new(AtomicU64::new(0));
@@ -145,7 +149,9 @@ async fn main() {
     for i in 0..total {
         tick.tick().await;
         let dev = devices[(i as usize) % devices.len()].0.clone();
-        let (http, url, key, sent, accepted, throttled, errors, shed) = (http.clone(), url.clone(), key.clone(), sent.clone(), accepted.clone(), throttled.clone(), errors.clone(), shed.clone());
+        // Cada pedido cai numa instância «à sorte» (rotação desfasada da dos aparelhos para não coincidir sempre).
+        let url = urls[((i as usize) * 7 + 3) % urls.len()].clone();
+        let (http, key, sent, accepted, throttled, errors, shed) = (http.clone(), key.clone(), sent.clone(), accepted.clone(), throttled.clone(), errors.clone(), shed.clone());
         inflight.push(tokio::spawn(async move {
             sent.fetch_add(1, Relaxed);
             match http.post(format!("{url}/v1/messages")).bearer_auth(&key)
@@ -165,7 +171,7 @@ async fn main() {
     }
     let send_secs = start.elapsed().as_secs_f64();
     tokio::time::sleep(Duration::from_secs(5)).await; // drena
-    let stats1 = server_pid.and_then(proc_stats);
+    let stats1 = sum_stats(&server_pids);
 
     // 5. relatório
     let acc = accepted.load(Relaxed);
@@ -184,7 +190,7 @@ async fn main() {
     if let Some(a) = acked { println!("ack vistos pelo servidor:  {a}"); }
     println!("latência de entrega:   p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms · máx {:.1} ms", ms(0.5), ms(0.95), ms(0.99), h.max() as f64 / 1000.0);
     if let (Some((r0, c0)), Some((r1, c1))) = (stats0, stats1) {
-        println!("servidor: RSS {r0:.0} → {r1:.0} MiB · CPU {:.1}s em {send_secs:.0}s ({:.0}% de um núcleo)", c1 - c0, 100.0 * (c1 - c0) / send_secs);
+        println!("servidor(es) ({}): RSS total {r0:.0} → {r1:.0} MiB · CPU {:.1}s em {send_secs:.0}s ({:.0}% de um núcleo, somado)", server_pids.len(), c1 - c0, 100.0 * (c1 - c0) / send_secs);
     }
     println!("anfitrião: nproc {} · load {} → {}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0), load0, load_avg());
 }

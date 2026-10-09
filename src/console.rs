@@ -566,6 +566,7 @@ async fn revoke_device(
     Path((id, dev)): Path<(Uuid, Uuid)>,
 ) -> R {
     let (a, org, p) = project_access(&st, &h, id, Role::Developer).await?;
+    st.device_cache.clear();
     if !crate::store::revoke_device(&st.db, p, dev)
         .await
         .map_err(ise)?

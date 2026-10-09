@@ -85,3 +85,8 @@ Ver [docs/carga.md](../carga.md). Em resumo, numa instância, em desenvolvimento
 ~1 100), com recusa precoce (503) acima disso. As metas de «dezenas de milhares de ligações por nó» e «milhares de mensagens por
 segundo» confirmam-se **numa instância e neste ambiente**; a escala horizontal (várias instâncias) continua por medir, e a fila
 quente fora do Postgres deixa de ser urgente (fica para quando o Postgres voltar a ser o teto).
+
+### Actualização (várias instâncias)
+
+O barramento entre instâncias passou para o Redis (pub/sub, `src/bus.rs`) e o aviso leva o aparelho; a escala horizontal foi medida e
+é **inconclusiva** (piso de latência de 200–500 ms com mais de uma instância, causa por isolar). Ver docs/carga.md.

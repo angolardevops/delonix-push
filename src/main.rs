@@ -34,13 +34,12 @@ async fn main() {
         .expect("migrações");
     let mut st = AppState::new(db, Config::from_env());
     if let Ok(url) = std::env::var("PUSH_REDIS_URL") {
-        st.limiter = std::sync::Arc::new(
-            delonix_push::limits::Limiter::redis(&url)
-                .await
-                .expect("Redis"),
-        );
+        st.use_redis(&url).await.expect("Redis");
     }
-    tokio::spawn(dispatch::run_worker(st.clone()));
+    // PUSH_WORKER=0 desliga o reenvio/expiração nesta instância (só para experiências: sem ele nada reenvia).
+    if std::env::var("PUSH_WORKER").map_or(true, |v| v != "0") {
+        tokio::spawn(dispatch::run_worker(st.clone()));
+    }
     tokio::spawn(dispatch::run_listener(st.clone()));
     let bind = std::env::var("PUSH_BIND").unwrap_or_else(|_| "0.0.0.0:8480".into());
     let l = tokio::net::TcpListener::bind(&bind).await.expect("bind");

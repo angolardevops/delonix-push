@@ -15,7 +15,19 @@ use uuid::Uuid;
 use crate::store::Message;
 
 const MAX_BATCH: usize = 128;
-const LINGER: Duration = Duration::from_millis(1);
+/// Quanto o primeiro item de um lote espera por companhia (`PUSH_BATCH_LINGER_MS`, 1 ms por omissão). Com poucas mensagens por
+/// instância um valor baixo faz lotes de ~1 linha e o agrupamento deixa de render; mais espera = lotes maiores e mais latência.
+fn linger() -> Duration {
+    static L: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        Duration::from_millis(
+            std::env::var("PUSH_BATCH_LINGER_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+        )
+    })
+}
 /// Lotes a gravar ao mesmo tempo (cada um usa uma ligação do pool: mais ligações pioraram nas medições).
 const MAX_FLUSHES: usize = 4;
 
@@ -38,7 +50,7 @@ impl<I: Send + 'static, O: Send + 'static> Batcher<I, O> {
         tokio::spawn(async move {
             while let Some(first) = rx.recv().await {
                 let mut batch = vec![first];
-                let linger = tokio::time::sleep(LINGER);
+                let linger = tokio::time::sleep(linger());
                 tokio::pin!(linger);
                 while batch.len() < MAX_BATCH {
                     tokio::select! {
@@ -88,10 +100,12 @@ pub struct Batchers {
     pub insert: Batcher<NewRow, bool>,
     pub claim_send: Batcher<(Uuid, f64), Option<Message>>,
     pub ack: Batcher<(Uuid, Uuid), bool>,
+    /// «Entrega esta mensagem» dirigido a OUTRA instância: um `pg_notify` por lote e por instância, não um por mensagem.
+    pub notify: Batcher<(Uuid, Uuid, Uuid), ()>,
 }
 
 impl Batchers {
-    pub fn new(db: PgPool) -> Self {
+    pub fn new(db: PgPool, bus: Arc<crate::bus::Bus>) -> Self {
         let d1 = db.clone();
         let insert = Batcher::spawn(move |rows: Vec<NewRow>| {
             let db = d1.clone();
@@ -139,6 +153,30 @@ impl Batchers {
                 ids.iter().map(|id| by_id.remove(id)).collect()
             }
         });
+        let d4 = db.clone();
+        let notify = Batcher::spawn(move |items: Vec<(Uuid, Uuid, Uuid)>| {
+            let (db, bus) = (d4.clone(), bus.clone());
+            async move {
+                // Agrupa por instância de destino; cada aviso é `<id>@<aparelho>,…`: o destino não precisa de consultar a base para
+                // saber o aparelho. 100 itens por aviso (o limite do NOTIFY do Postgres é 8000 bytes).
+                let mut by_node: std::collections::BTreeMap<Uuid, Vec<String>> =
+                    std::collections::BTreeMap::new();
+                for (node, id, device) in &items {
+                    by_node
+                        .entry(*node)
+                        .or_default()
+                        .push(format!("{id}@{device}"));
+                }
+                let mut payloads: Vec<(Uuid, String)> = Vec::new();
+                for (node, toks) in by_node {
+                    for chunk in toks.chunks(100) {
+                        payloads.push((node, chunk.join(",")));
+                    }
+                }
+                bus.publish(&db, &payloads).await;
+                vec![(); items.len()]
+            }
+        });
         let d3 = db;
         let ack = Batcher::spawn(move |pairs: Vec<(Uuid, Uuid)>| {
             let db = d3.clone();
@@ -163,6 +201,7 @@ impl Batchers {
             insert,
             claim_send,
             ack,
+            notify,
         }
     }
 }

@@ -114,6 +114,7 @@ async fn create_device(State(st): State<AppState>, h: HeaderMap, Json(b): Json<N
 
 async fn revoke_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
     let p = project_of(&st, &h).await?;
+    st.device_cache.clear();
     if store::revoke_device(&st.db, p, id).await.map_err(ise)? {
         Ok(StatusCode::NO_CONTENT.into_response())
     } else {
@@ -256,12 +257,15 @@ pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
     }
     let targets: Vec<Uuid> = match (b.device_id, b.topic.as_deref()) {
         (Some(d), None) => {
-            if store::device_in_project(&st.db, p, d)
-                .await
-                .map_err(ise)?
-                .is_none()
-            {
-                return Err(err(StatusCode::NOT_FOUND, "aparelho desconhecido"));
+            if st.device_cache.get(&(p, d)).is_none() {
+                if store::device_in_project(&st.db, p, d)
+                    .await
+                    .map_err(ise)?
+                    .is_none()
+                {
+                    return Err(err(StatusCode::NOT_FOUND, "aparelho desconhecido"));
+                }
+                st.device_cache.put((p, d), ());
             }
             vec![d]
         }

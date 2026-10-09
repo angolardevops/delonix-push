@@ -39,18 +39,37 @@ pub async fn deliver(st: &AppState, id: Uuid) {
     if m.state != "queued" && m.state != "sent" {
         return;
     }
-    match store::presence_node(&st.db, m.device_id).await {
-        Ok(Some(node)) if node != st.node_id => {
-            let _ = sqlx::query("SELECT pg_notify($1, $2)")
-                .bind(CANAL)
-                .bind(format!("{node}:{id}"))
-                .execute(&st.db)
-                .await;
+    route(st, id, m.device_id).await;
+}
+
+/// Que instância tem a ligação do aparelho, com cache curta (ver `AppState::presence_cache`).
+async fn presence(st: &AppState, device: Uuid) -> Option<Uuid> {
+    if let Some(p) = st.presence_cache.get(&device) {
+        return p;
+    }
+    let p = store::presence_node(&st.db, device).await.ok().flatten();
+    st.presence_cache.put(device, p);
+    p
+}
+
+/// Decide por onde vai uma mensagem já gravada: ligação de OUTRA instância (avisa-a, em lote), ligação desta, fornecedor, ou fila.
+async fn route(st: &AppState, id: Uuid, device: Uuid) {
+    match presence(st, device).await {
+        Some(node) if node != st.node_id => {
+            let _ = st.batch.notify.submit((node, id, device)).await;
         }
-        Ok(Some(_)) if st.gateway.is_connected(m.device_id) => {
-            deliver_local(st, id, m.device_id).await
+        Some(_) if st.gateway.is_connected(device) => deliver_local(st, id, device).await,
+        Some(_) => {
+            // A cache diz que a ligação é desta instância mas já não é (o aparelho foi para outra): confirma na base, uma vez.
+            st.presence_cache.remove(&device);
+            match presence(st, device).await {
+                Some(node) if node != st.node_id => {
+                    let _ = st.batch.notify.submit((node, id, device)).await;
+                }
+                _ => deliver_provider(st, id).await,
+            }
         }
-        _ => deliver_provider(st, id).await,
+        None => deliver_provider(st, id).await,
     }
 }
 
@@ -78,7 +97,7 @@ pub async fn deliver_to(st: &AppState, id: Uuid, device: Uuid) {
     if st.gateway.is_connected(device) {
         deliver_local(st, id, device).await;
     } else {
-        deliver(st, id).await;
+        route(st, id, device).await;
     }
 }
 
@@ -139,7 +158,34 @@ async fn deliver_provider(st: &AppState, id: Uuid) {
 }
 
 /// Escuta os pedidos das outras instâncias e entrega os que são para a que tem a ligação. Reconecta sozinho.
+/// Um aviso de outra instância: «estas mensagens são para aparelhos ligados a ti». Entrega local direta (que também agrupa).
+pub fn handle_notice(st: &AppState, items: Vec<(Uuid, Uuid)>) {
+    for (id, device) in items {
+        let st = st.clone();
+        tokio::spawn(async move { deliver_local(&st, id, device).await });
+    }
+}
+
+/// Lê um aviso `<id>@<aparelho>,<id>@<aparelho>,…`.
+pub fn parse_notice(payload: &str) -> Vec<(Uuid, Uuid)> {
+    payload
+        .split(',')
+        .filter_map(|t| {
+            let (id, dev) = t.split_once('@')?;
+            Some((Uuid::parse_str(id).ok()?, Uuid::parse_str(dev).ok()?))
+        })
+        .collect()
+}
+
+/// Escuta os avisos entre instâncias: pelo Redis se estiver ligado, senão pelo LISTEN do Postgres.
 pub async fn run_listener(st: AppState) {
+    if matches!(*st.bus, crate::bus::Bus::Redis { .. }) {
+        return crate::bus::run_redis_subscriber(st).await;
+    }
+    run_pg_listener(st).await
+}
+
+async fn run_pg_listener(st: AppState) {
     loop {
         let Ok(mut l) = sqlx::postgres::PgListener::connect_with(&st.db).await else {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -150,20 +196,13 @@ pub async fn run_listener(st: AppState) {
             continue;
         }
         while let Ok(n) = l.recv().await {
-            let Some((node, id)) = n.payload().split_once(':') else {
+            let Some((node, ids)) = n.payload().split_once(':') else {
                 continue;
             };
             if node != st.node_id.to_string() {
                 continue;
             }
-            if let Ok(id) = Uuid::parse_str(id) {
-                let st = st.clone();
-                tokio::spawn(async move {
-                    if let Ok(Some(m)) = store::message(&st.db, id).await {
-                        deliver_local(&st, id, m.device_id).await;
-                    }
-                });
-            }
+            handle_notice(&st, parse_notice(ids));
         }
         // `recv` falhou (ligação perdida): volta a ligar. As mensagens perdidas apanha-as o `tick`.
     }
