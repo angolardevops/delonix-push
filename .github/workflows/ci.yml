@@ -29,7 +29,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "21" }
-      - uses: android-actions/setup-android@v3
       - name: Testes do :core (servidor de papel) e compilação do :android
         working-directory: sdk/android
-        run: ./gradlew --no-daemon :core:test :android:assembleDebug
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          ./gradlew --no-daemon :core:test :android:assembleDebug
