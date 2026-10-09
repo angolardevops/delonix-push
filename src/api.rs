@@ -23,10 +23,16 @@ pub(crate) fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, Json<Value>) {
 async fn project_of(st: &AppState, h: &HeaderMap) -> Result<Uuid, (StatusCode, Json<Value>)> {
     let key = auth::bearer(h)
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "falta a chave de servidor"))?;
-    store::project_of_key(&st.db, key)
+    let h = auth::hash(key);
+    if let Some(p) = st.key_cache.get(&h) {
+        return Ok(p);
+    }
+    let p = store::project_of_key(&st.db, key)
         .await
         .map_err(ise)?
-        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "chave inválida"))
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "chave inválida"))?;
+    st.key_cache.put(h, p);
+    Ok(p)
 }
 
 pub fn router(st: AppState) -> Router {
@@ -201,6 +207,17 @@ pub(crate) struct SendBody {
 
 async fn send(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SendBody>) -> R {
     let p = project_of(&st, &h).await?;
+    // Protecção contra sobrecarga: com demasiados envios a decorrer recusa-se JÁ (503 + Retry-After), em vez de aceitar
+    // e deixar a latência e a memória crescerem sem limite (medido a 2× a capacidade: p50 > 10 s).
+    let Ok(_permit) = st.send_permits.clone().try_acquire_owned() else {
+        crate::metrics::Metrics::inc(&st.metrics.shed);
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "1")],
+            Json(json!({ "error": "servidor ocupado: tenta de novo", "retry_after_secs": 1 })),
+        )
+            .into_response());
+    };
     do_send(&st, p, b).await
 }
 
@@ -271,12 +288,19 @@ pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
         }
     };
     // Limites do projecto: segundos e dia. Um tópico gasta uma unidade por aparelho.
-    let (rate, quota): (Option<i32>, Option<i64>) =
-        sqlx::query_as("SELECT rate_per_sec, daily_quota FROM projects WHERE id = $1")
-            .bind(p)
-            .fetch_one(&st.db)
-            .await
-            .map_err(ise)?;
+    let (rate, quota) = match st.limits_cache.get(&p) {
+        Some(v) => v,
+        None => {
+            let v: (Option<i32>, Option<i64>) =
+                sqlx::query_as("SELECT rate_per_sec, daily_quota FROM projects WHERE id = $1")
+                    .bind(p)
+                    .fetch_one(&st.db)
+                    .await
+                    .map_err(ise)?;
+            st.limits_cache.put(p, v);
+            v
+        }
+    };
     let rate = rate.map_or(st.cfg.default_rate_per_sec, |v| v as u32);
     let quota = quota.map_or(st.cfg.default_daily_quota, |v| v as u64);
     if let Err(r) = st.limiter.check(p, targets.len() as u64, rate, quota).await {
@@ -315,7 +339,7 @@ pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
         .await
         .map_err(ise)?;
         if nova {
-            dispatch::deliver(st, id).await;
+            dispatch::deliver_to(st, id, *d).await;
         }
         ids.push(id);
     }
@@ -349,7 +373,14 @@ async fn connect(State(st): State<AppState>, h: HeaderMap, ws: WebSocketUpgrade)
         .await
         .map_err(ise)?
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "aparelho inválido"))?;
-    Ok(ws.on_upgrade(move |s| gateway::serve(st, dev, s)))
+    // Buffers pequenos: o valor por omissão (128 KiB de leitura e de escrita) custava ~190 KB por ligação
+    // (medido); as mensagens e os acks são curtos.
+    Ok(ws
+        .read_buffer_size(4096)
+        .write_buffer_size(4096)
+        .max_write_buffer_size(256 * 1024)
+        .max_message_size(64 * 1024)
+        .on_upgrade(move |s| gateway::serve(st, dev, s)))
 }
 
 async fn metrics(State(st): State<AppState>, h: HeaderMap) -> axum::response::Response {
@@ -392,6 +423,7 @@ async fn set_limits(
             "os limites têm de ser positivos",
         ));
     }
+    st.limits_cache.clear();
     let n = sqlx::query("UPDATE projects SET rate_per_sec = $2, daily_quota = $3 WHERE id = $1")
         .bind(id)
         .bind(b.rate_per_sec)

@@ -508,6 +508,7 @@ async fn revoke_key(
     if n == 0 {
         return Err(err(StatusCode::NOT_FOUND, "chave desconhecida"));
     }
+    st.key_cache.clear();
     audit(
         &st.db,
         Some(org),

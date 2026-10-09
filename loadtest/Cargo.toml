@@ -1,0 +1,16 @@
+[package]
+name = "delonix-push-loadtest"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Gerador de carga do delonix-push: N ligações WebSocket reais, M mensagens/s, latência de entrega e perda"
+
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+hdrhistogram = "7"

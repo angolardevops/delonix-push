@@ -62,6 +62,10 @@ PUSH_CONSOLE_DIR=$PWD/console/dist cargo run      # o servidor serve a consola e
 | `PUSH_METRICS_TOKEN` | abre `/metrics` (Prometheus) a quem trouxer o token; vazio = fechado |
 | `PUSH_CONSOLE_OPEN_REGISTRATION=1` | qualquer pessoa pode criar conta na consola |
 | `PUSH_CONSOLE_DIR` | pasta `console/dist`: o servidor serve a consola em `/` |
+| `PUSH_DB_MAX_CONNECTIONS` | pool da base (10 por omissão: mais piorou nas medições) |
+| `PUSH_ASYNC_COMMIT=1` | commit sem esperar o disco (duplica a escrita; pode perder dezenas de ms num crash) |
+| `PUSH_MAX_INFLIGHT_SENDS` | envios em curso por instância (256); acima disso 503 + `Retry-After` |
+| `PUSH_DEFAULT_RATE_PER_SEC`, `PUSH_DEFAULT_DAILY_QUOTA` | limites por omissão de cada projecto |
 
 Limites por projecto: mensagens por segundo e por dia (um tópico gasta uma unidade por aparelho). Excedê-los dá `429` com
 `Retry-After`. Janela fixa de 1 s: pode passar até ao dobro do limite à volta da fronteira. Se o Redis falhar, deixa passar.
@@ -73,6 +77,10 @@ exponencial com *jitter*, *heartbeat*, pára se o segredo for revogado) e `:andr
 primeiro plano (`PushService`), `BootReceiver` e a fachada `DelonixPush`. Testes: `./gradlew :core:test` (servidor de
 papel) e `sdk/android/e2e.sh` (contra o binário Rust real, com base nova). O serviço Android compila (`assembleDebug`)
 mas **ainda não correu num aparelho/emulador**.
+
+## Carga
+
+`loadtest/` + [docs/carga.md](docs/carga.md): o que se mediu (10 000 ligações a 1 000 msg/s com p99 de 2,8 ms numa instância) e, sobretudo, o que **não** se mediu.
 
 ## Licença e contribuições
 

@@ -229,3 +229,37 @@ async fn metricas_fechadas_sem_token_e_contam_o_que_aconteceu(db: PgPool) {
     assert_eq!(valor("dpush_ws_connections"), 1);
     assert!(txt.contains("# TYPE dpush_ws_connections gauge"));
 }
+
+#[sqlx::test]
+async fn sobrecarga_recusa_cedo_com_503_e_conta_nas_metricas(db: PgPool) {
+    // Zero licenças: toda a gente é «a mais». Em carga real o limite é `max_inflight_sends`.
+    let a = app(db, |s| {
+        let mut c = (*s.cfg).clone();
+        c.metrics_token = "m".into();
+        c.max_inflight_sends = 0;
+        s.cfg = Arc::new(c);
+        s.send_permits = Arc::new(tokio::sync::Semaphore::new(0));
+    })
+    .await;
+    let (_p, key) = a.project("meet").await;
+    let (dev, _) = a.device(&key, "android").await;
+    let r = a.send(&key, json!({"device_id": dev, "payload": 1})).await;
+    assert_eq!(r.status(), 503);
+    assert_eq!(r.headers()["retry-after"], "1");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM messages")
+        .fetch_one(&a.st.db)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "recusado antes de tocar na base");
+    let txt = a
+        .http
+        .get(a.url("/metrics"))
+        .bearer_auth("m")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(txt.contains("dpush_sends_shed_total 1"), "{txt}");
+}

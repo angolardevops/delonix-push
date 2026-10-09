@@ -47,29 +47,38 @@ pub async fn deliver(st: &AppState, id: Uuid) {
                 .execute(&st.db)
                 .await;
         }
-        Ok(Some(_)) if st.gateway.is_connected(m.device_id) => deliver_local(st, id).await,
+        Ok(Some(_)) if st.gateway.is_connected(m.device_id) => {
+            deliver_local(st, id, m.device_id).await
+        }
         _ => deliver_provider(st, id).await,
     }
 }
 
 /// Entrega pela ligação própria que ESTA instância tem (chamada também quando outra instância pede por NOTIFY).
-pub async fn deliver_local(st: &AppState, id: Uuid) {
-    let lease = st.cfg.ack_timeout.as_secs_f64();
-    let Ok(Some(m)) = store::message(&st.db, id).await else {
-        return;
-    };
-    if !st.gateway.is_connected(m.device_id) {
+/// Uma só consulta: reserva e marca como enviada (`claim_and_send`).
+pub async fn deliver_local(st: &AppState, id: Uuid, device: Uuid) {
+    if !st.gateway.is_connected(device) {
         return;
     }
-    let Ok(Some(m)) = store::claim(&st.db, id, lease).await else {
+    let lease = st.cfg.ack_timeout.as_secs_f64();
+    let Ok(Some(m)) = store::claim_and_send(&st.db, id, lease).await else {
         return;
     };
-    if m.attempts >= st.cfg.max_attempts {
+    if m.attempts > st.cfg.max_attempts {
         let _ = store::mark_failed(&st.db, m.id, "tentativas esgotadas").await;
         return;
     }
-    if st.gateway.send(m.device_id, wire(&m)) {
-        let _ = store::mark_sent(&st.db, m.id, lease).await;
+    // Se o envio falhar (fila cheia, ligação a cair), fica `sent` e o worker reenvia ao fim do lease.
+    st.gateway.send(device, wire(&m));
+}
+
+/// Caminho rápido logo a seguir ao enfileirar: se o aparelho está ligado AQUI, entrega sem consultar a presença.
+/// Senão, o caminho geral (outra instância, fornecedor, ou fica na fila).
+pub async fn deliver_to(st: &AppState, id: Uuid, device: Uuid) {
+    if st.gateway.is_connected(device) {
+        deliver_local(st, id, device).await;
+    } else {
+        deliver(st, id).await;
     }
 }
 
@@ -149,7 +158,11 @@ pub async fn run_listener(st: AppState) {
             }
             if let Ok(id) = Uuid::parse_str(id) {
                 let st = st.clone();
-                tokio::spawn(async move { deliver_local(&st, id).await });
+                tokio::spawn(async move {
+                    if let Ok(Some(m)) = store::message(&st.db, id).await {
+                        deliver_local(&st, id, m.device_id).await;
+                    }
+                });
             }
         }
         // `recv` falhou (ligação perdida): volta a ligar. As mensagens perdidas apanha-as o `tick`.

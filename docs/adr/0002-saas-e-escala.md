@@ -77,3 +77,10 @@ anfitrião) e em CI com valores baixos como regressão. Só se publicam números
 
 FCM/APNs continuam a depender das contas da Google e da Apple. O iPhone só recebe push com a app morta por APNs. A escala
 da ligação própria no Android esbarra na política de bateria dos fabricantes, não no servidor.
+
+## Estado medido (2026-10-09)
+
+Ver [docs/carga.md](../carga.md). Em resumo, numa instância, em desenvolvimento: 10 000 ligações a 1 000 msg/s com p99 de 2,8 ms e
+123 MiB; teto sustentado de ~1 000–1 200 msg/s (limitado pela base), com recusa precoce (503) acima disso. As metas de «dezenas
+de milhares de ligações por nó» confirmam-se para ligações; a de «milhares de mensagens por segundo» **só se atinge com várias
+instâncias e a fila quente fora do Postgres**, que continuam por fazer e por medir.

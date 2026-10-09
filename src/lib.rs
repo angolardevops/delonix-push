@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod cache;
 pub mod config;
 pub mod console;
 pub mod dispatch;
@@ -26,6 +27,9 @@ use sqlx::PgPool;
 
 pub use providers::Provider;
 
+/// Limites de um projecto (`rate_per_sec`, `daily_quota`); `None` = os valores por omissão do servidor.
+pub type ProjectLimits = (Option<i32>, Option<i64>);
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -38,11 +42,17 @@ pub struct AppState {
     /// Fornecedores construídos a partir das credenciais de cada projecto (ver `tenants`).
     pub provider_cache: Arc<tenants::Cache>,
     pub limiter: Arc<limits::Limiter>,
+    /// Chave de servidor (hash) → projecto, e limites por projecto: lidos a cada envio, validade curta (ver `cache`).
+    pub key_cache: Arc<cache::Ttl<Vec<u8>, uuid::Uuid>>,
+    pub limits_cache: Arc<cache::Ttl<uuid::Uuid, ProjectLimits>>,
     pub metrics: Arc<metrics::Metrics>,
+    /// Licenças dos envios em curso (ver `Config::max_inflight_sends`).
+    pub send_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
     pub fn new(db: PgPool, cfg: config::Config) -> Self {
+        let permits = cfg.max_inflight_sends;
         Self {
             db,
             node_id: uuid::Uuid::new_v4(),
@@ -52,7 +62,10 @@ impl AppState {
             apns: None,
             provider_cache: Arc::default(),
             limiter: Arc::new(limits::Limiter::memory()),
+            key_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(3))),
+            limits_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(5))),
             metrics: Arc::default(),
+            send_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
         }
     }
 }

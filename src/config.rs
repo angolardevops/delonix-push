@@ -30,6 +30,10 @@ pub struct Config {
     pub apns_sandbox_base: String,
     /// Pasta com a consola web já construída (`console/dist`): se existir, o servidor serve-a em `/`.
     pub console_dir: Option<String>,
+    /// Máximo de envios (`POST /v1/messages`) a decorrer ao mesmo tempo nesta instância. Acima disto responde 503 com
+    /// `Retry-After` em vez de aceitar e deixar a fila crescer (medido: sem isto, a 2× a capacidade a latência passava de
+    /// 10 s e a memória multiplicava-se). 0 = recusa tudo (só testes).
+    pub max_inflight_sends: usize,
 }
 
 impl Default for Config {
@@ -53,20 +57,103 @@ impl Default for Config {
             apns_base: "https://api.push.apple.com".into(),
             apns_sandbox_base: "https://api.sandbox.push.apple.com".into(),
             console_dir: None,
+            max_inflight_sends: 256,
         }
     }
 }
 
 impl Config {
     pub fn from_env() -> Self {
-        Self {
-            admin_token: std::env::var("PUSH_ADMIN_TOKEN").unwrap_or_default(),
-            console_dir: std::env::var("PUSH_CONSOLE_DIR")
-                .ok()
-                .filter(|d| !d.is_empty()),
-            console_open_registration: std::env::var("PUSH_CONSOLE_OPEN_REGISTRATION")
-                .is_ok_and(|v| v == "1"),
-            ..Self::default()
+        Self::from_lookup(|k| std::env::var(k).ok())
+    }
+
+    /// A configuração a partir de um «dicionário» de variáveis (as de ambiente, ou as de um teste).
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        let d = Self::default();
+        fn num<T: std::str::FromStr>(get: &dyn Fn(&str) -> Option<String>, k: &str) -> Option<T> {
+            get(k).and_then(|v| v.trim().parse().ok())
         }
+        Self {
+            admin_token: get("PUSH_ADMIN_TOKEN").unwrap_or_default(),
+            console_dir: get("PUSH_CONSOLE_DIR").filter(|v| !v.is_empty()),
+            console_open_registration: get("PUSH_CONSOLE_OPEN_REGISTRATION")
+                .is_some_and(|v| v == "1"),
+            secret_key: get("PUSH_SECRET_KEY")
+                .and_then(|h| hex::decode(h.trim()).ok())
+                .and_then(|b| <[u8; 32]>::try_from(b).ok()),
+            metrics_token: get("PUSH_METRICS_TOKEN").unwrap_or_default(),
+            default_rate_per_sec: num(&get, "PUSH_DEFAULT_RATE_PER_SEC")
+                .unwrap_or(d.default_rate_per_sec),
+            default_daily_quota: num(&get, "PUSH_DEFAULT_DAILY_QUOTA")
+                .unwrap_or(d.default_daily_quota),
+            max_inflight_sends: num(&get, "PUSH_MAX_INFLIGHT_SENDS")
+                .unwrap_or(d.max_inflight_sends),
+            ..d
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg(pairs: &[(&str, &str)]) -> Config {
+        let m: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Config::from_lookup(|k| m.get(k).cloned())
+    }
+
+    #[test]
+    fn reads_every_documented_variable() {
+        let c = cfg(&[
+            ("PUSH_ADMIN_TOKEN", "adm"),
+            ("PUSH_METRICS_TOKEN", "met"),
+            ("PUSH_SECRET_KEY", &"ab".repeat(32)),
+            ("PUSH_CONSOLE_OPEN_REGISTRATION", "1"),
+            ("PUSH_CONSOLE_DIR", "/srv/console"),
+            ("PUSH_DEFAULT_RATE_PER_SEC", "77"),
+            ("PUSH_DEFAULT_DAILY_QUOTA", "1234"),
+            ("PUSH_MAX_INFLIGHT_SENDS", "9"),
+        ]);
+        assert_eq!(c.admin_token, "adm");
+        assert_eq!(c.metrics_token, "met");
+        assert_eq!(c.secret_key, Some([0xab; 32]));
+        assert!(c.console_open_registration);
+        assert_eq!(c.console_dir.as_deref(), Some("/srv/console"));
+        assert_eq!(
+            (
+                c.default_rate_per_sec,
+                c.default_daily_quota,
+                c.max_inflight_sends
+            ),
+            (77, 1234, 9)
+        );
+    }
+
+    #[test]
+    fn safe_defaults_and_bad_values() {
+        let c = cfg(&[]);
+        assert!(
+            c.secret_key.is_none()
+                && c.metrics_token.is_empty()
+                && !c.console_open_registration
+                && c.admin_token.is_empty()
+        );
+        // uma chave que não tem 64 hex NÃO vale (melhor sem chave do que uma chave curta)
+        assert!(cfg(&[("PUSH_SECRET_KEY", "abcd")]).secret_key.is_none());
+        assert!(cfg(&[("PUSH_SECRET_KEY", &"zz".repeat(32))])
+            .secret_key
+            .is_none());
+        assert_eq!(
+            cfg(&[("PUSH_DEFAULT_RATE_PER_SEC", "muitos")]).default_rate_per_sec,
+            Config::default().default_rate_per_sec
+        );
+        assert!(
+            !cfg(&[("PUSH_CONSOLE_OPEN_REGISTRATION", "true")]).console_open_registration,
+            "só «1» abre o registo"
+        );
     }
 }

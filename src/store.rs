@@ -178,6 +178,23 @@ pub struct NewMessage<'a> {
 /// Enfileira uma mensagem. Devolve `(id, nova)`; um pedido repetido (mesma `idempotency_key`) devolve o id
 /// original e `nova = false`. A mesma `collapse_key` substitui a mensagem anterior ainda por entregar.
 pub async fn enqueue(db: &PgPool, m: &NewMessage<'_>) -> sqlx::Result<(Uuid, bool)> {
+    // Caminho comum (sem idempotência nem substituição): um único INSERT, sem transacção.
+    if m.idempotency_key.is_none() && m.collapse_key.is_none() {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO messages (id, project_id, device_id, priority, payload, state, expires_at)
+             VALUES ($1, $2, $3, $4, $5, 'queued', now() + make_interval(secs => $6))",
+        )
+        .bind(id)
+        .bind(m.project)
+        .bind(m.device)
+        .bind(m.priority)
+        .bind(m.payload)
+        .bind(m.ttl_secs as f64)
+        .execute(db)
+        .await?;
+        return Ok((id, true));
+    }
     let mut tx = db.begin().await?;
     if let Some(k) = m.idempotency_key {
         let existing: Option<Uuid> = sqlx::query_scalar(
@@ -245,6 +262,22 @@ pub async fn open_for_device(db: &PgPool, device: Uuid) -> sqlx::Result<Vec<Mess
 pub async fn claim(db: &PgPool, id: Uuid, lease_secs: f64) -> sqlx::Result<Option<Message>> {
     sqlx::query_as(&format!(
         "UPDATE messages SET next_attempt_at = now() + make_interval(secs => $2)
+          WHERE id = $1 AND state IN ('queued','sent') AND expires_at > now() AND next_attempt_at <= now()
+          RETURNING {MSG_COLS}"
+    ))
+    .bind(id).bind(lease_secs).fetch_optional(db).await
+}
+
+/// Reserva E marca como enviada numa só consulta (entrega pela ligação própria): `sent`, +1 tentativa, e a próxima
+/// tentativa só depois do `lease`. Se o envio ao aparelho falhar a seguir, a mensagem volta ao fim do lease.
+pub async fn claim_and_send(
+    db: &PgPool,
+    id: Uuid,
+    lease_secs: f64,
+) -> sqlx::Result<Option<Message>> {
+    sqlx::query_as(&format!(
+        "UPDATE messages SET state = 'sent', attempts = attempts + 1, sent_at = now(), last_error = NULL,
+                next_attempt_at = now() + make_interval(secs => $2)
           WHERE id = $1 AND state IN ('queued','sent') AND expires_at > now() AND next_attempt_at <= now()
           RETURNING {MSG_COLS}"
     ))

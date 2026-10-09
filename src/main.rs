@@ -7,7 +7,24 @@ async fn main() {
         .init();
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let db = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(
+            std::env::var("PUSH_DB_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+        )
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // Opcional (PUSH_ASYNC_COMMIT=1): o COMMIT não espera pelo disco. Duplica o débito de escrita (medido) à custa
+                // de, num crash do Postgres, poder perder as últimas dezenas de ms de mensagens aceites. Desligado por omissão.
+                if std::env::var("PUSH_ASYNC_COMMIT").is_ok_and(|v| v == "1") {
+                    sqlx::query("SET synchronous_commit = off")
+                        .execute(&mut *conn)
+                        .await?;
+                }
+                Ok(())
+            })
+        })
         .connect(&url)
         .await
         .expect("base");

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 pub struct Metrics {
     pub enqueued: AtomicU64,
     pub rate_limited: AtomicU64,
+    pub shed: AtomicU64,
     pub acked: AtomicU64,
     pub provider_accepted: AtomicU64,
     pub provider_failed: AtomicU64,
@@ -35,6 +36,11 @@ impl Metrics {
             "dpush_messages_rate_limited_total",
             "Pedidos de envio recusados pelos limites (429).",
             l(&self.rate_limited),
+        );
+        counter(
+            "dpush_sends_shed_total",
+            "Pedidos de envio recusados por sobrecarga da instância (503).",
+            l(&self.shed),
         );
         counter(
             "dpush_messages_acked_total",
