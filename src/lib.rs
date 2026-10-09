@@ -10,6 +10,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod console;
 pub mod dispatch;
 pub mod gateway;
 pub mod providers;

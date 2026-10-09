@@ -10,12 +10,12 @@ use uuid::Uuid;
 
 use crate::{auth, dispatch, gateway, store, AppState};
 
-type R = Result<Response, (StatusCode, Json<Value>)>;
+pub(crate) type R = Result<Response, (StatusCode, Json<Value>)>;
 
-fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
+pub(crate) fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
     (code, Json(json!({ "error": msg })))
 }
-fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, Json<Value>) {
+pub(crate) fn ise<E: std::fmt::Display>(e: E) -> (StatusCode, Json<Value>) {
     tracing::error!("{e}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "erro interno")
 }
@@ -43,6 +43,7 @@ pub fn router(st: AppState) -> Router {
         .route("/v1/messages", post(send))
         .route("/v1/messages/{id}", get(get_message))
         .route("/v1/connect", get(connect))
+        .merge(crate::console::routes())
         .with_state(st)
 }
 
@@ -100,7 +101,7 @@ async fn revoke_device(State(st): State<AppState>, h: HeaderMap, Path(id): Path<
     }
 }
 
-fn valid_topic(t: &str) -> bool {
+pub(crate) fn valid_topic(t: &str) -> bool {
     !t.is_empty()
         && t.len() <= 100
         && t.chars()
@@ -174,18 +175,23 @@ async fn set_provider(State(st): State<AppState>, h: HeaderMap, Json(b): Json<Pr
 }
 
 #[derive(Deserialize)]
-struct SendBody {
-    device_id: Option<Uuid>,
-    topic: Option<String>,
-    payload: Value,
-    priority: Option<String>,
-    ttl_secs: Option<i64>,
-    collapse_key: Option<String>,
-    idempotency_key: Option<String>,
+pub(crate) struct SendBody {
+    pub(crate) device_id: Option<Uuid>,
+    pub(crate) topic: Option<String>,
+    pub(crate) payload: Value,
+    pub(crate) priority: Option<String>,
+    pub(crate) ttl_secs: Option<i64>,
+    pub(crate) collapse_key: Option<String>,
+    pub(crate) idempotency_key: Option<String>,
 }
 
 async fn send(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SendBody>) -> R {
     let p = project_of(&st, &h).await?;
+    do_send(&st, p, b).await
+}
+
+/// O envio, partilhado pela API de servidor e pelo «enviar mensagem de teste» da consola.
+pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
     let size = serde_json::to_vec(&b.payload)
         .map(|v| v.len())
         .unwrap_or(usize::MAX);
@@ -268,7 +274,7 @@ async fn send(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SendBody>)
         .await
         .map_err(ise)?;
         if nova {
-            dispatch::deliver(&st, id).await;
+            dispatch::deliver(st, id).await;
         }
         ids.push(id);
     }

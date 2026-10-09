@@ -21,6 +21,23 @@ Estados de uma mensagem: `queued → sent → delivered` (ligação própria), `
 
 Testes: `DATABASE_URL=… cargo test` (Postgres; `sqlx::test`).
 
+## API de gestão (`/console/v1`)
+
+Para a consola web (e para CLI/Terraform). Sessão `Bearer dps_…` (`POST /console/v1/auth/login`; registo fechado por omissão,
+`PUSH_CONSOLE_OPEN_REGISTRATION=1` abre-o). Papéis por organização: `viewer` < `developer` < `admin` < `owner`.
+
+| Rota | Papel mínimo |
+|---|---|
+| `POST /console/v1/auth/register｜login｜logout`, `GET /console/v1/me` | — |
+| `GET｜POST /console/v1/orgs`, `GET｜POST /console/v1/orgs/{org}/projects` | membro ｜ admin para criar |
+| `GET /console/v1/projects/{id}` (aparelhos, ligados agora) | viewer |
+| `GET｜POST /console/v1/projects/{id}/keys`, `DELETE …/keys/{key}` | admin (o valor só aparece ao criar) |
+| `GET /console/v1/projects/{id}/devices`, `DELETE …/devices/{id}` | viewer ｜ developer |
+| `GET /console/v1/projects/{id}/messages?state=` (sem o conteúdo), `POST` (mensagem de teste) | viewer ｜ developer |
+| `GET /console/v1/projects/{id}/stats` (24 h: por estado, por hora, latência p50/p95) | viewer |
+
+Um projecto de outra organização responde 404, como se não existisse. As acções de gestão ficam em `audit_log`.
+
 ## SDK Android
 
 `sdk/android` (Gradle): `:core` é Kotlin/JVM puro (`PushClient`: WebSocket com ack, deduplicação por `id`, recuo
