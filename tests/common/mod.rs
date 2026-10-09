@@ -29,6 +29,7 @@ pub async fn app(db: PgPool, tweak: impl FnOnce(&mut AppState)) -> App {
     tweak(&mut st);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(delonix_push::dispatch::run_listener(st.clone()));
     let router = api::router(st.clone());
     tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
     App {

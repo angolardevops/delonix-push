@@ -291,3 +291,49 @@ pub async fn ack(db: &PgPool, device: Uuid, id: Uuid) -> sqlx::Result<bool> {
         .bind(id).bind(device).execute(db).await?;
     Ok(r.rows_affected() > 0)
 }
+
+/// Regista que `node` tem a ligação viva do aparelho (substitui a de outra instância).
+pub async fn presence_set(db: &PgPool, device: Uuid, node: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO device_connections (device_id, node_id) VALUES ($1, $2)
+         ON CONFLICT (device_id) DO UPDATE SET node_id = $2, connected_at = now(), seen_at = now()",
+    )
+    .bind(device)
+    .bind(node)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn presence_touch(db: &PgPool, device: Uuid, node: Uuid) {
+    let _ = sqlx::query(
+        "UPDATE device_connections SET seen_at = now() WHERE device_id = $1 AND node_id = $2",
+    )
+    .bind(device)
+    .bind(node)
+    .execute(db)
+    .await;
+}
+
+/// Só apaga se a linha ainda é desta instância (uma ligação nova noutra não se desfaz).
+pub async fn presence_clear(db: &PgPool, device: Uuid, node: Uuid) {
+    let _ = sqlx::query("DELETE FROM device_connections WHERE device_id = $1 AND node_id = $2")
+        .bind(device)
+        .bind(node)
+        .execute(db)
+        .await;
+}
+
+/// A instância com a ligação VIVA do aparelho (heartbeat nos últimos 120 s), se houver.
+pub async fn presence_node(db: &PgPool, device: Uuid) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar("SELECT node_id FROM device_connections WHERE device_id = $1 AND seen_at > now() - interval '120 seconds'")
+        .bind(device).fetch_optional(db).await
+}
+
+pub async fn presence_sweep(db: &PgPool) {
+    let _ = sqlx::query(
+        "DELETE FROM device_connections WHERE seen_at <= now() - interval '120 seconds'",
+    )
+    .execute(db)
+    .await;
+}

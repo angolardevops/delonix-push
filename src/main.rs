@@ -17,6 +17,7 @@ async fn main() {
         .expect("migrações");
     let st = AppState::new(db, Config::from_env());
     tokio::spawn(dispatch::run_worker(st.clone()));
+    tokio::spawn(dispatch::run_listener(st.clone()));
     let bind = std::env::var("PUSH_BIND").unwrap_or_else(|_| "0.0.0.0:8480".into());
     let l = tokio::net::TcpListener::bind(&bind).await.expect("bind");
     tracing::info!("delonix-push em {bind}");

@@ -58,6 +58,7 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
     let (tx, mut rx) = mpsc::channel::<String>(256);
     let conn = st.gateway.attach(dev.id, tx);
     store::touch_device(&st.db, dev.id).await;
+    let _ = store::presence_set(&st.db, dev.id, st.node_id).await;
 
     // Escritor: tudo o que sai passa por aqui.
     let writer = tokio::spawn(async move {
@@ -68,6 +69,18 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
         }
         let _ = sink.close().await;
     });
+
+    // Enquanto a ligação viver, a presença renova-se (um cliente que nunca manda `ping` também conta).
+    let beat = {
+        let (db, dev_id, node) = (st.db.clone(), dev.id, st.node_id);
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                iv.tick().await;
+                store::presence_touch(&db, dev_id, node).await;
+            }
+        })
+    };
 
     // Ao ligar, entrega o que ficou à espera (inclui o que foi enviado e nunca confirmado).
     if let Ok(open) = store::open_for_device(&st.db, dev.id).await {
@@ -101,10 +114,16 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
             Some("ping") => {
                 st.gateway.send(dev.id, r#"{"type":"pong"}"#.into());
                 store::touch_device(&st.db, dev.id).await;
+                store::presence_touch(&st.db, dev.id, st.node_id).await;
             }
             _ => {}
         }
     }
     st.gateway.detach(dev.id, conn);
+    beat.abort();
+    // Só se não houve reconexão nesta mesma instância entretanto (a ligação nova já registou a sua presença).
+    if !st.gateway.is_connected(dev.id) {
+        store::presence_clear(&st.db, dev.id, st.node_id).await;
+    }
     writer.abort();
 }

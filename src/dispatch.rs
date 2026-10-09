@@ -25,8 +25,55 @@ fn backoff(attempts: i32) -> f64 {
     (2f64.powi(attempts.clamp(0, 8))).min(300.0)
 }
 
-/// Tenta entregar uma mensagem agora. Seguro de chamar de vários sítios: o `claim` garante um só vencedor.
+/// Canal do Postgres por onde uma instância pede a outra que entregue: `<node_id>:<message_id>`.
+pub const CANAL: &str = "dpush_entrega";
+
+/// Tenta entregar uma mensagem agora. Seguro de chamar de qualquer instância e de vários sítios:
+/// - o aparelho está ligado a OUTRA instância → pede-lhe (NOTIFY) e não faz mais nada;
+/// - está ligado a ESTA → reserva (`claim`, só um vence) e envia pela ligação;
+/// - não está ligado em lado nenhum → fornecedor (FCM/APNs) se tiver token, senão fica na fila.
 pub async fn deliver(st: &AppState, id: Uuid) {
+    let Ok(Some(m)) = store::message(&st.db, id).await else {
+        return;
+    };
+    if m.state != "queued" && m.state != "sent" {
+        return;
+    }
+    match store::presence_node(&st.db, m.device_id).await {
+        Ok(Some(node)) if node != st.node_id => {
+            let _ = sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(CANAL)
+                .bind(format!("{node}:{id}"))
+                .execute(&st.db)
+                .await;
+        }
+        Ok(Some(_)) if st.gateway.is_connected(m.device_id) => deliver_local(st, id).await,
+        _ => deliver_provider(st, id).await,
+    }
+}
+
+/// Entrega pela ligação própria que ESTA instância tem (chamada também quando outra instância pede por NOTIFY).
+pub async fn deliver_local(st: &AppState, id: Uuid) {
+    let lease = st.cfg.ack_timeout.as_secs_f64();
+    let Ok(Some(m)) = store::message(&st.db, id).await else {
+        return;
+    };
+    if !st.gateway.is_connected(m.device_id) {
+        return;
+    }
+    let Ok(Some(m)) = store::claim(&st.db, id, lease).await else {
+        return;
+    };
+    if m.attempts >= st.cfg.max_attempts {
+        let _ = store::mark_failed(&st.db, m.id, "tentativas esgotadas").await;
+        return;
+    }
+    if st.gateway.send(m.device_id, wire(&m)) {
+        let _ = store::mark_sent(&st.db, m.id, lease).await;
+    }
+}
+
+async fn deliver_provider(st: &AppState, id: Uuid) {
     let lease = st.cfg.ack_timeout.as_secs_f64();
     let Ok(Some(m)) = store::claim(&st.db, id, lease).await else {
         return;
@@ -35,12 +82,6 @@ pub async fn deliver(st: &AppState, id: Uuid) {
         let _ = store::mark_failed(&st.db, m.id, "tentativas esgotadas").await;
         return;
     }
-    // 1. Ligação própria, se o aparelho está ligado a esta instância.
-    if st.gateway.send(m.device_id, wire(&m)) {
-        let _ = store::mark_sent(&st.db, m.id, lease).await;
-        return;
-    }
-    // 2. Fornecedor, se o aparelho tem token.
     let Ok(Some(dev)) = store::device_in_project(&st.db, m.project_id, m.device_id).await else {
         let _ = store::mark_failed(&st.db, m.id, "aparelho desconhecido").await;
         return;
@@ -52,7 +93,7 @@ pub async fn deliver(st: &AppState, id: Uuid) {
             _ => (None, ""),
         };
     let Some(prov) = prov else {
-        // 3. Sem caminho: fica na fila até ao aparelho ligar (o `claim` já adiou a próxima tentativa).
+        // Sem caminho: fica na fila até ao aparelho ligar (o `claim` já adiou a próxima tentativa).
         return;
     };
     let out = Outgoing {
@@ -80,9 +121,37 @@ pub async fn deliver(st: &AppState, id: Uuid) {
     }
 }
 
+/// Escuta os pedidos das outras instâncias e entrega os que são para a que tem a ligação. Reconecta sozinho.
+pub async fn run_listener(st: AppState) {
+    loop {
+        let Ok(mut l) = sqlx::postgres::PgListener::connect_with(&st.db).await else {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        };
+        if l.listen(CANAL).await.is_err() {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        while let Ok(n) = l.recv().await {
+            let Some((node, id)) = n.payload().split_once(':') else {
+                continue;
+            };
+            if node != st.node_id.to_string() {
+                continue;
+            }
+            if let Ok(id) = Uuid::parse_str(id) {
+                let st = st.clone();
+                tokio::spawn(async move { deliver_local(&st, id).await });
+            }
+        }
+        // `recv` falhou (ligação perdida): volta a ligar. As mensagens perdidas apanha-as o `tick`.
+    }
+}
+
 /// Reenvio, expiração e arrumação. Uma volta; `run_worker` repete-a.
 pub async fn tick(st: &AppState) {
     let _ = store::expire_due(&st.db).await;
+    store::presence_sweep(&st.db).await;
     if let Ok(ids) = store::due_ids(&st.db, 200).await {
         for id in ids {
             deliver(st, id).await;

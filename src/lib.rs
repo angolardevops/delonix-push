@@ -24,6 +24,8 @@ pub use providers::Provider;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Identifica esta instância: quem tem a ligação de um aparelho é quem o entrega.
+    pub node_id: uuid::Uuid,
     pub cfg: Arc<config::Config>,
     pub gateway: Arc<gateway::Registry>,
     pub fcm: Option<Arc<dyn Provider>>,
@@ -34,6 +36,7 @@ impl AppState {
     pub fn new(db: PgPool, cfg: config::Config) -> Self {
         Self {
             db,
+            node_id: uuid::Uuid::new_v4(),
             cfg: Arc::new(cfg),
             gateway: Arc::new(gateway::Registry::default()),
             fcm: None,

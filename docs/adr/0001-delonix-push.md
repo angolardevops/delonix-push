@@ -37,9 +37,12 @@ e é entregue quando o aparelho ligar.
 
 ## Limites conhecidos da v1
 
-- **Uma instância de gateway:** o registo de ligações vive em memória. Com várias instâncias, uma mensagem só chega
-  pela ligação quando o *worker* da instância certa a apanhar (o `claim` com lease evita duplicados, mas não
-  encaminha). Próximo passo: `LISTEN/NOTIFY` ou um bus.
+- **Várias instâncias (feito):** `device_connections` regista qual instância tem a ligação de cada aparelho (renovada pelo
+  heartbeat; presença com mais de 120 s não conta). Quem recebe o pedido consulta-a: se a ligação é de outra instância,
+  pede-lhe por `NOTIFY` (`dpush_entrega`) e ela entrega; se é desta, reserva (`claim` com lease) e envia; se não há
+  ligação, vai ao fornecedor ou fica na fila. Uma instância que morre deixa presença velha, que expira, e o `tick` do
+  worker reencaminha. Provado com duas instâncias sobre a mesma base (3 testes; uma mutação, sem o NOTIFY, apanhada).
+  Não provado: carga, nem perda de NOTIFY sob falha de rede além do reencaminhamento pelo worker.
 - Difusão de tópico limitada a 1000 aparelhos por pedido, síncrona.
 - Sem limite de taxa por projecto, sem métricas, sem TLS próprio (atrás do edge), sem chaves de cliente públicas.
 - `payload` ≤ 4096 bytes. FCM só aceita strings: o *payload* vai serializado em `data.payload`.
