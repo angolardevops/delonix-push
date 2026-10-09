@@ -24,11 +24,38 @@ trap 'for p in "${PIDS[@]}"; do kill $p 2>/dev/null; done; delonix container exe
 for i in $(seq 0 $((K-1))); do
   for _ in $(seq 50); do [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:$((PORT+i))/healthz)" = 200 ] && break; sleep 0.2; done
 done
+# DROP_INDEX=<nome>: apaga um índice da base de prova (experiência: medir o que custa à escrita).
+if [ -n "${DROP_INDEX:-}" ]; then
+  delonix container exec "$CONT" psql -U "$PGU" -d "$DB" -c "DROP INDEX IF EXISTS $DROP_INDEX" >/dev/null 2>&1 && echo "# índice $DROP_INDEX apagado (experiência)"
+fi
 IFS=, ; URL_LIST="${URLS[*]}"; PID_LIST="${PIDS[*]}"; unset IFS
 echo "# $K servidor(es) release (pids ${PIDS[*]}), pool ${PUSH_DB_MAX_CONNECTIONS:-10} cada, base $DB, $(nproc) núcleos, $(date -Is)"
 for t in "$@"; do
   IFS=: read -r c r s <<<"$t"
   echo; echo "=== $c ligações · $r msg/s · ${s}s ==="
+  snap() { for u in "${URLS[@]}"; do curl -s -H "authorization: Bearer met-carga" "$u/metrics"; done; }
+  snap > /tmp/metrics-antes.txt
   loadtest/target/release/delonix-push-loadtest --url "$URL_LIST" --admin-token admin-carga --metrics-token met-carga \
     --conns "$c" --rate "$r" --secs "$s" --server-pid "$PID_LIST"
+  snap > /tmp/metrics-depois.txt
+  # Médias POR ETAPA neste escalão (soma das instâncias): diferença de `_sum` e `_count` entre antes e depois.
+  python3 - <<'PY'
+import re
+def lê(f):
+    d = {}
+    for l in open(f):
+        m = re.match(r'^(dpush_\w+?)(_sum|_count|_rows_total|_flushes_total) ([\d.e+-]+)$', l.strip())
+        if m: d[(m.group(1), m.group(2))] = d.get((m.group(1), m.group(2)), 0) + float(m.group(3))
+    return d
+a, b = lê('/tmp/metrics-antes.txt'), lê('/tmp/metrics-depois.txt')
+print("   por etapa (média neste escalão):")
+for nome in sorted({k[0] for k in b}):
+    n = b.get((nome, '_count'), 0) - a.get((nome, '_count'), 0)
+    if n > 0 and (nome, '_sum') in b:
+        print(f"     {nome:44s} n={int(n):7d}  média {1000 * (b[(nome, '_sum')] - a.get((nome, '_sum'), 0)) / n:8.2f} ms")
+for st in ('insert', 'claim', 'ack', 'notify'):
+    r = b.get((f'dpush_stage_{st}', '_rows_total'), 0) - a.get((f'dpush_stage_{st}', '_rows_total'), 0)
+    f = b.get((f'dpush_stage_{st}', '_flushes_total'), 0) - a.get((f'dpush_stage_{st}', '_flushes_total'), 0)
+    if f > 0: print(f"     lote médio {st:7s}: {r / f:6.1f} linhas ({int(f)} gravações)")
+PY
 done

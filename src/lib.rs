@@ -65,8 +65,9 @@ impl AppState {
     pub fn new(db: PgPool, cfg: config::Config) -> Self {
         let permits = cfg.max_inflight_sends;
         let bus = Arc::new(bus::Bus::Postgres);
+        let metrics: Arc<metrics::Metrics> = Arc::default();
         Self {
-            batch: Arc::new(batch::Batchers::new(db.clone(), bus.clone())),
+            batch: Arc::new(batch::Batchers::new(db.clone(), bus.clone(), &metrics)),
             bus,
             db,
             node_id: uuid::Uuid::new_v4(),
@@ -78,7 +79,7 @@ impl AppState {
             limiter: Arc::new(limits::Limiter::memory()),
             key_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(3))),
             limits_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(5))),
-            metrics: Arc::default(),
+            metrics,
             send_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
             device_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(3))),
             presence_cache: Arc::new(cache::Ttl::new(std::time::Duration::from_secs(2))),
@@ -89,7 +90,11 @@ impl AppState {
     pub async fn use_redis(&mut self, url: &str) -> Result<(), redis::RedisError> {
         self.limiter = Arc::new(limits::Limiter::redis(url).await?);
         self.bus = Arc::new(bus::Bus::redis(url).await?);
-        self.batch = Arc::new(batch::Batchers::new(self.db.clone(), self.bus.clone()));
+        self.batch = Arc::new(batch::Batchers::new(
+            self.db.clone(),
+            self.bus.clone(),
+            &self.metrics,
+        ));
         Ok(())
     }
 }

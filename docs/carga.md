@@ -51,11 +51,45 @@ numa corrida e de 71 ms noutra):
 - **Uma corrida de 1 instância com 5 ms de espera colapsou** (4 436 aceites, 936 erros). Não se repetiu nem se explicou: trata-se como
   ruído até haver repetição.
 
-O que ficou (útil por si, mesmo sem resolver o piso de latência): o barramento entre instâncias em Redis (`PUSH_REDIS_URL`; sem ele,
+(A causa foi depois isolada com métricas por etapa: ver a secção seguinte.) O que ficou (útil por si): o barramento entre instâncias em Redis (`PUSH_REDIS_URL`; sem ele,
 `LISTEN/NOTIFY`), o aviso que leva `<mensagem>@<aparelho>` em lote, a cache de presença (2 s) e de aparelhos validados (3 s), e
-`PUSH_BATCH_LINGER_MS`. **Próximo passo para fechar isto:** métricas de latência POR ETAPA no servidor (gravação, rota, aviso,
-entrega local, ack) para ver onde se gastam os 200–500 ms, e repetir sobre um Postgres e uma rede que não sejam os deste ambiente.
-**Não se deve anunciar escala horizontal enquanto isto não estiver resolvido.**
+`PUSH_BATCH_LINGER_MS`. **Não se deve anunciar escala horizontal enquanto isto não estiver resolvido.**
+
+## Onde se gastam os 200–500 ms com várias instâncias (medido por etapa)
+
+O servidor expõe, em `/metrics`, a latência de cada etapa do caminho quente e o tamanho médio dos lotes
+(`dpush_send_seconds`, `dpush_stage_{insert,claim,ack,notify}_seconds` e `_flush_seconds`, `dpush_bus_transit_seconds`,
+`dpush_stage_*_rows_total`/`_flushes_total`). `loadtest/run.sh` imprime as médias de cada escalão. Resultado (2 000 ligações):
+
+| | 1 instância, 2 500 msg/s | 4 instâncias, 2 500 msg/s |
+|---|---|---|
+| trânsito do aviso entre instâncias (Redis) | — | **0,2 ms** |
+| gravação de um lote (insert / reserva / ack) | 3,6 / 3,7 / 3,1 ms | **87 / 90 / 73 ms** |
+| lote médio (linhas) | 6,8 / 9,3 / 10,2 | 9,2 / 13,3 / 19,6 |
+| pedido de envio completo | 18 ms | 396 ms |
+
+**Conclusões:**
+
+1. **O barramento entre instâncias não é o problema** (0,2 ms). O `NOTIFY` do Postgres também não explicava: o Redis não mudou nada.
+2. **O custo está na base:** o mesmo trabalho total passa a demorar ~25× mais por gravação quando há 4 instâncias a escrever ao mesmo tempo
+   (16 gravações concorrentes de lote em vez de 4). Os lotes não encolhem, por isso não é falta de agrupamento.
+3. **Parte da causa é um ponto quente de índice:** todas as mensagens novas têm `next_attempt_at ≈ agora`, logo insert, reserva e ack batem
+   na mesma folha do índice `messages_due`. Experiência com esse índice apagado (só na base de prova): as gravações descem de 87/90/73 ms
+   para 32/31/25 ms (2 500 msg/s) e de 65/75/67 para 40/43/37 ms (4 000 msg/s). **Ajuda 2–3×, mas não explica tudo** (continuam 8× acima
+   do caso de 1 instância).
+4. A 1 instância a 4 000 msg/s (acima da capacidade) as mesmas gravações vão a 140–210 ms: a base satura, e o servidor recusa cedo.
+
+**Leitura:** com este Postgres (um contentor rootless, na mesma máquina partilhada) a base é o teto, e ter mais instâncias da aplicação
+só lhe põe mais escritas concorrentes. Aumentar o número de instâncias **não aumenta a capacidade enquanto a base for a mesma**.
+
+**O que se pode fazer a seguir** (por ordem de custo/benefício, nenhum feito):
+- Trocar o índice `messages_due` por um que não seja um ponto quente (por exemplo só `WHERE state = 'sent'` para o reenvio por falta de ack,
+  e um índice próprio e pequeno para as `queued` que precisam de reencaminhamento). **Mexe na correção do reenvio**: precisa de testes
+  dos três caminhos (aparelho offline, fornecedor com falha transitória, presença desactualizada).
+- Reduzir as escritas por mensagem de 3 para 1–2: o estado `sent` e o `delivered` podiam fundir-se (gravar só a confirmação) no caminho de
+  ligação própria, guardando o «enviado» em memória.
+- Medir com um Postgres nativo, ajustado e com rede real: este ambiente não diz a capacidade de produção.
+- A fila quente fora do Postgres (Redis Streams ou NATS), como previsto no ADR-0002, é a saída definitiva: tira as escritas do caminho quente.
 
 ## O que a medição apanhou e foi corrigido
 

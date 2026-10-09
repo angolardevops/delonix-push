@@ -90,3 +90,8 @@ quente fora do Postgres deixa de ser urgente (fica para quando o Postgres voltar
 
 O barramento entre instâncias passou para o Redis (pub/sub, `src/bus.rs`) e o aviso leva o aparelho; a escala horizontal foi medida e
 é **inconclusiva** (piso de latência de 200–500 ms com mais de uma instância, causa por isolar). Ver docs/carga.md.
+
+Métricas por etapa (ver docs/carga.md): o aviso entre instâncias custa 0,2 ms; o que cresce com as instâncias é a latência de **gravação na
+base** (de ~3,6 ms para ~90 ms por lote com 4 instâncias), em parte por um ponto quente no índice `messages_due`. Conclusão para o desenho:
+mais instâncias da aplicação não aumentam a capacidade enquanto a base for a mesma; a saída é tirar as escritas do caminho quente (fila em
+Redis/NATS) e/ou reduzir as escritas por mensagem.

@@ -159,20 +159,32 @@ async fn deliver_provider(st: &AppState, id: Uuid) {
 
 /// Escuta os pedidos das outras instâncias e entrega os que são para a que tem a ligação. Reconecta sozinho.
 /// Um aviso de outra instância: «estas mensagens são para aparelhos ligados a ti». Entrega local direta (que também agrupa).
-pub fn handle_notice(st: &AppState, items: Vec<(Uuid, Uuid)>) {
-    for (id, device) in items {
+pub fn handle_notice(st: &AppState, items: Vec<(Uuid, Uuid, u128)>) {
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_micros());
+    for (id, device, sent_us) in items {
+        if sent_us > 0 && now_us >= sent_us {
+            st.metrics
+                .bus_transit
+                .observe(Duration::from_micros((now_us - sent_us) as u64));
+        }
         let st = st.clone();
         tokio::spawn(async move { deliver_local(&st, id, device).await });
     }
 }
 
-/// Lê um aviso `<id>@<aparelho>,<id>@<aparelho>,…`.
-pub fn parse_notice(payload: &str) -> Vec<(Uuid, Uuid)> {
+/// Lê um aviso `<id>@<aparelho>@<µs>,…`.
+pub fn parse_notice(payload: &str) -> Vec<(Uuid, Uuid, u128)> {
     payload
         .split(',')
         .filter_map(|t| {
-            let (id, dev) = t.split_once('@')?;
-            Some((Uuid::parse_str(id).ok()?, Uuid::parse_str(dev).ok()?))
+            let mut p = t.split('@');
+            Some((
+                Uuid::parse_str(p.next()?).ok()?,
+                Uuid::parse_str(p.next()?).ok()?,
+                p.next().and_then(|u| u.parse().ok()).unwrap_or(0),
+            ))
         })
         .collect()
 }

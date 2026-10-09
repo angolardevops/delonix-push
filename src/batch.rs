@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use uuid::Uuid;
 
+use crate::metrics::{Metrics, Stage};
 use crate::store::Message;
 
 const MAX_BATCH: usize = 128;
@@ -36,16 +37,18 @@ type Job<I, O> = (I, oneshot::Sender<O>);
 /// Um agrupador: `submit` entrega um item e espera pelo resultado do lote em que foi.
 pub struct Batcher<I, O> {
     tx: mpsc::Sender<Job<I, O>>,
+    stage: Arc<Stage>,
 }
 
 impl<I: Send + 'static, O: Send + 'static> Batcher<I, O> {
-    pub fn spawn<F, Fut>(flush: F) -> Self
+    pub fn spawn<F, Fut>(stage: Arc<Stage>, flush: F) -> Self
     where
         F: Fn(Vec<I>) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Vec<O>> + Send + 'static,
     {
         let (tx, mut rx) = mpsc::channel::<Job<I, O>>(8192);
         let flush = Arc::new(flush);
+        let st = stage.clone();
         let permits = Arc::new(Semaphore::new(MAX_FLUSHES));
         tokio::spawn(async move {
             while let Some(first) = rx.recv().await {
@@ -65,10 +68,17 @@ impl<I: Send + 'static, O: Send + 'static> Batcher<I, O> {
                     .await
                     .expect("semáforo vivo");
                 let flush = flush.clone();
+                let st = st.clone();
                 tokio::spawn(async move {
                     let (items, replies): (Vec<I>, Vec<oneshot::Sender<O>>) =
                         batch.into_iter().unzip();
+                    let n = items.len() as u64;
+                    let t0 = std::time::Instant::now();
                     let outs = flush(items).await;
+                    st.flush.observe(t0.elapsed());
+                    st.rows.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                    st.flushes
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     for (reply, out) in replies.into_iter().zip(outs) {
                         let _ = reply.send(out);
                     }
@@ -76,13 +86,16 @@ impl<I: Send + 'static, O: Send + 'static> Batcher<I, O> {
                 });
             }
         });
-        Self { tx }
+        Self { tx, stage }
     }
 
     pub async fn submit(&self, item: I) -> Option<O> {
+        let t0 = std::time::Instant::now();
         let (r, rx) = oneshot::channel();
         self.tx.send((item, r)).await.ok()?;
-        rx.await.ok()
+        let out = rx.await.ok();
+        self.stage.total.observe(t0.elapsed());
+        out
     }
 }
 
@@ -105,9 +118,9 @@ pub struct Batchers {
 }
 
 impl Batchers {
-    pub fn new(db: PgPool, bus: Arc<crate::bus::Bus>) -> Self {
+    pub fn new(db: PgPool, bus: Arc<crate::bus::Bus>, m: &Metrics) -> Self {
         let d1 = db.clone();
-        let insert = Batcher::spawn(move |rows: Vec<NewRow>| {
+        let insert = Batcher::spawn(m.insert.clone(), move |rows: Vec<NewRow>| {
             let db = d1.clone();
             async move {
                 let n = rows.len();
@@ -130,7 +143,7 @@ impl Batchers {
             }
         });
         let d2 = db.clone();
-        let claim_send = Batcher::spawn(move |jobs: Vec<(Uuid, f64)>| {
+        let claim_send = Batcher::spawn(m.claim.clone(), move |jobs: Vec<(Uuid, f64)>| {
             let db = d2.clone();
             async move {
                 let lease = jobs.first().map_or(30.0, |j| j.1);
@@ -154,22 +167,25 @@ impl Batchers {
             }
         });
         let d4 = db.clone();
-        let notify = Batcher::spawn(move |items: Vec<(Uuid, Uuid, Uuid)>| {
+        let notify = Batcher::spawn(m.notify.clone(), move |items: Vec<(Uuid, Uuid, Uuid)>| {
             let (db, bus) = (d4.clone(), bus.clone());
             async move {
                 // Agrupa por instância de destino; cada aviso é `<id>@<aparelho>,…`: o destino não precisa de consultar a base para
                 // saber o aparelho. 100 itens por aviso (o limite do NOTIFY do Postgres é 8000 bytes).
+                let now_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_micros());
                 let mut by_node: std::collections::BTreeMap<Uuid, Vec<String>> =
                     std::collections::BTreeMap::new();
                 for (node, id, device) in &items {
                     by_node
                         .entry(*node)
                         .or_default()
-                        .push(format!("{id}@{device}"));
+                        .push(format!("{id}@{device}@{now_us}"));
                 }
                 let mut payloads: Vec<(Uuid, String)> = Vec::new();
                 for (node, toks) in by_node {
-                    for chunk in toks.chunks(100) {
+                    for chunk in toks.chunks(80) {
                         payloads.push((node, chunk.join(",")));
                     }
                 }
@@ -178,7 +194,7 @@ impl Batchers {
             }
         });
         let d3 = db;
-        let ack = Batcher::spawn(move |pairs: Vec<(Uuid, Uuid)>| {
+        let ack = Batcher::spawn(m.ack.clone(), move |pairs: Vec<(Uuid, Uuid)>| {
             let db = d3.clone();
             async move {
                 // Só o dono da mensagem a confirma: o par (id, aparelho) tem de casar.

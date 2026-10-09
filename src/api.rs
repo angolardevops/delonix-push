@@ -219,7 +219,10 @@ async fn send(State(st): State<AppState>, h: HeaderMap, Json(b): Json<SendBody>)
         )
             .into_response());
     };
-    do_send(&st, p, b).await
+    let t0 = std::time::Instant::now();
+    let r = do_send(&st, p, b).await;
+    st.metrics.send_total.observe(t0.elapsed());
+    r
 }
 
 /// O envio, partilhado pela API de servidor e pelo «enviar mensagem de teste» da consola.
