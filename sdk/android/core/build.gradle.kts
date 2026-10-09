@@ -1,5 +1,6 @@
 plugins {
     id("org.jetbrains.kotlin.jvm")
+    `maven-publish`
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
@@ -14,3 +15,12 @@ dependencies {
 }
 
 tasks.test { useJUnit() }
+
+group = "ao.ngolacloud.push"
+version = "0.1.0-SNAPSHOT"
+
+java { withSourcesJar() }
+
+publishing {
+    publications { create<MavenPublication>("core") { artifactId = "core"; from(components["java"]) } }
+}
