@@ -20,3 +20,8 @@ Estados de uma mensagem: `queued → sent → delivered` (ligação própria), `
 `expired`, `failed`. Protocolo do WebSocket em `src/gateway.rs`.
 
 Testes: `DATABASE_URL=… cargo test` (Postgres; `sqlx::test`).
+
+## Licença e contribuições
+
+[Apache-2.0](LICENSE). Contribuições são bem-vindas por pull request; correm `cargo fmt --check`, `cargo clippy --all-targets`
+e `cargo test`. Vulnerabilidades: [SECURITY.md](SECURITY.md).

@@ -2,7 +2,7 @@
 name = "delonix-push"
 version = "0.1.0"
 edition = "2021"
-license = "Proprietary"
+license = "Apache-2.0"
 description = "N'GolaCloud push: entrega de mensagens a aplicações móveis, com ligação própria e adaptadores FCM/APNs"
 
 [dependencies]
