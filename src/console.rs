@@ -15,7 +15,7 @@ use argon2::Argon2;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,6 +54,14 @@ pub fn routes() -> Router<AppState> {
             get(list_messages).post(test_send),
         )
         .route("/console/v1/projects/{id}/stats", get(stats))
+        .route(
+            "/console/v1/projects/{id}/credentials",
+            get(list_credentials),
+        )
+        .route(
+            "/console/v1/projects/{id}/credentials/{kind}",
+            put(put_credential).delete(delete_credential),
+        )
 }
 
 // ---------- papéis e sessão ----------
@@ -652,4 +660,101 @@ async fn stats(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -
         "hourly": hourly.into_iter().map(|(h, n)| json!({ "hour": h, "messages": n })).collect::<Vec<_>>(),
         "delivery_latency_secs": { "p50": lat.0, "p95": lat.1 },
     })).into_response())
+}
+
+// ---------- credenciais dos fornecedores ----------
+
+/// Metadados seguros de mostrar; a chave privada nunca sai da base depois de carregada.
+async fn list_credentials(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uuid>) -> R {
+    let (_, _, p) = project_access(&st, &h, id, Role::Admin).await?;
+    let rows: Vec<(String, Value, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as("SELECT provider, meta, updated_at FROM project_credentials WHERE project_id = $1 ORDER BY provider")
+            .bind(p)
+            .fetch_all(&st.db)
+            .await
+            .map_err(ise)?;
+    Ok(Json(rows.into_iter().map(|(provider, meta, at)| json!({ "provider": provider, "meta": meta, "updated_at": at })).collect::<Vec<_>>()).into_response())
+}
+
+async fn put_credential(
+    State(st): State<AppState>,
+    h: HeaderMap,
+    Path((id, kind)): Path<(Uuid, String)>,
+    Json(b): Json<Value>,
+) -> R {
+    let (a, org, p) = project_access(&st, &h, id, Role::Admin).await?;
+    let Some(key) = st.cfg.secret_key.as_ref() else {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "o servidor não tem PUSH_SECRET_KEY: não guarda credenciais",
+        ));
+    };
+    let invalid = |m: &str| err(StatusCode::UNPROCESSABLE_ENTITY, m);
+    let (plain, meta) = match kind.as_str() {
+        "fcm" => {
+            let sa = b.get("service_account").unwrap_or(&b);
+            let secret: crate::tenants::FcmSecret = serde_json::from_value(json!({
+                "project_id": sa.get("project_id"), "client_email": sa.get("client_email"), "private_key": sa.get("private_key"),
+            }))
+            .map_err(|_| invalid("faltam project_id, client_email ou private_key da conta de serviço"))?;
+            // Constrói-se já: uma chave ilegível diz-se aqui, e não à primeira mensagem.
+            crate::tenants::build_fcm(&st, &secret)
+                .map_err(|_| invalid("private_key ilegível (PEM RSA esperado)"))?;
+            let meta =
+                json!({ "project_id": secret.project_id, "client_email": secret.client_email });
+            (serde_json::to_vec(&secret).map_err(ise)?, meta)
+        }
+        "apns" => {
+            let secret: crate::tenants::ApnsSecret = serde_json::from_value(json!({
+                "key_id": b.get("key_id"), "team_id": b.get("team_id"), "p8": b.get("p8"), "topic": b.get("topic"),
+                "voip": b.get("voip").and_then(Value::as_bool).unwrap_or(false),
+                "sandbox": b.get("sandbox").and_then(Value::as_bool).unwrap_or(false),
+            }))
+            .map_err(|_| invalid("faltam key_id, team_id, p8 ou topic"))?;
+            crate::tenants::build_apns(&st, &secret)
+                .map_err(|_| invalid("p8 ilegível (PEM EC esperado)"))?;
+            let meta = json!({ "key_id": secret.key_id, "team_id": secret.team_id, "topic": secret.topic, "voip": secret.voip, "sandbox": secret.sandbox });
+            (serde_json::to_vec(&secret).map_err(ise)?, meta)
+        }
+        _ => {
+            return Err(err(
+                StatusCode::NOT_FOUND,
+                "fornecedor desconhecido (fcm|apns)",
+            ))
+        }
+    };
+    let sealed = crate::seal::seal(key, &crate::tenants::aad(p, &kind), &plain);
+    sqlx::query(
+        "INSERT INTO project_credentials (project_id, provider, sealed, meta) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (project_id, provider) DO UPDATE SET sealed = $3, meta = $4, updated_at = now()",
+    )
+    .bind(p)
+    .bind(&kind)
+    .bind(&sealed)
+    .bind(&meta)
+    .execute(&st.db)
+    .await
+    .map_err(ise)?;
+    audit(&st.db, Some(org), Some(p), a, "credencial.carregada", &kind).await;
+    Ok(Json(json!({ "provider": kind, "meta": meta })).into_response())
+}
+
+async fn delete_credential(
+    State(st): State<AppState>,
+    h: HeaderMap,
+    Path((id, kind)): Path<(Uuid, String)>,
+) -> R {
+    let (a, org, p) = project_access(&st, &h, id, Role::Admin).await?;
+    let n = sqlx::query("DELETE FROM project_credentials WHERE project_id = $1 AND provider = $2")
+        .bind(p)
+        .bind(&kind)
+        .execute(&st.db)
+        .await
+        .map_err(ise)?
+        .rows_affected();
+    if n == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "credencial desconhecida"));
+    }
+    audit(&st.db, Some(org), Some(p), a, "credencial.removida", &kind).await;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

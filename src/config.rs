@@ -14,6 +14,15 @@ pub struct Config {
     pub max_fanout: i64,
     /// Qualquer pessoa pode criar conta na consola (`PUSH_CONSOLE_OPEN_REGISTRATION=1`). Desligado por omissão.
     pub console_open_registration: bool,
+    /// Chave de instalação (32 bytes) com que se cifram as credenciais dos fornecedores em repouso
+    /// (`PUSH_SECRET_KEY`, 64 hex). Sem ela as credenciais por projecto não se guardam (503).
+    pub secret_key: Option<[u8; 32]>,
+    /// Destinos dos fornecedores. Fixos em produção: NUNCA vêm das credenciais que um inquilino carrega
+    /// (senão um inquilino fazia o servidor chamar o URL que quisesse). Os testes apontam-nos a servidores de papel.
+    pub fcm_base: String,
+    pub fcm_token_uri: String,
+    pub apns_base: String,
+    pub apns_sandbox_base: String,
 }
 
 impl Default for Config {
@@ -28,6 +37,11 @@ impl Default for Config {
             worker_interval: Duration::from_secs(1),
             max_fanout: 1000,
             console_open_registration: false,
+            secret_key: None,
+            fcm_base: "https://fcm.googleapis.com".into(),
+            fcm_token_uri: "https://oauth2.googleapis.com/token".into(),
+            apns_base: "https://api.push.apple.com".into(),
+            apns_sandbox_base: "https://api.sandbox.push.apple.com".into(),
         }
     }
 }

@@ -14,7 +14,9 @@ pub mod console;
 pub mod dispatch;
 pub mod gateway;
 pub mod providers;
+pub mod seal;
 pub mod store;
+pub mod tenants;
 
 use std::sync::Arc;
 
@@ -31,6 +33,8 @@ pub struct AppState {
     pub gateway: Arc<gateway::Registry>,
     pub fcm: Option<Arc<dyn Provider>>,
     pub apns: Option<Arc<dyn Provider>>,
+    /// Fornecedores construídos a partir das credenciais de cada projecto (ver `tenants`).
+    pub provider_cache: Arc<tenants::Cache>,
 }
 
 impl AppState {
@@ -42,6 +46,7 @@ impl AppState {
             gateway: Arc::new(gateway::Registry::default()),
             fcm: None,
             apns: None,
+            provider_cache: Arc::default(),
         }
     }
 }

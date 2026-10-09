@@ -23,7 +23,7 @@ Testes: `DATABASE_URL=… cargo test` (Postgres; `sqlx::test`).
 
 ## API de gestão (`/console/v1`)
 
-Para a consola web (e para CLI/Terraform). Sessão `Bearer dps_…` (`POST /console/v1/auth/login`; registo fechado por omissão,
+Para a consola web (e para CLI/Terraform). `PUSH_SECRET_KEY` (64 hex) cifra as credenciais dos fornecedores; sem ela o servidor recusa guardá-las (503). Os destinos do FCM/APNs são fixos no servidor: nunca vêm das credenciais de um inquilino. Sessão `Bearer dps_…` (`POST /console/v1/auth/login`; registo fechado por omissão,
 `PUSH_CONSOLE_OPEN_REGISTRATION=1` abre-o). Papéis por organização: `viewer` < `developer` < `admin` < `owner`.
 
 | Rota | Papel mínimo |
@@ -34,6 +34,7 @@ Para a consola web (e para CLI/Terraform). Sessão `Bearer dps_…` (`POST /cons
 | `GET｜POST /console/v1/projects/{id}/keys`, `DELETE …/keys/{key}` | admin (o valor só aparece ao criar) |
 | `GET /console/v1/projects/{id}/devices`, `DELETE …/devices/{id}` | viewer ｜ developer |
 | `GET /console/v1/projects/{id}/messages?state=` (sem o conteúdo), `POST` (mensagem de teste) | viewer ｜ developer |
+| `GET /console/v1/projects/{id}/credentials`, `PUT｜DELETE …/credentials/{fcm｜apns}` | admin (cifradas em repouso; a chave nunca volta) |
 | `GET /console/v1/projects/{id}/stats` (24 h: por estado, por hora, latência p50/p95) | viewer |
 
 Um projecto de outra organização responde 404, como se não existisse. As acções de gestão ficam em `audit_log`.

@@ -86,10 +86,16 @@ async fn deliver_provider(st: &AppState, id: Uuid) {
         let _ = store::mark_failed(&st.db, m.id, "aparelho desconhecido").await;
         return;
     };
-    let (prov, token): (Option<&Arc<dyn Provider>>, _) =
+    let (prov, token): (Option<Arc<dyn Provider>>, _) =
         match (dev.provider.as_str(), dev.provider_token.as_deref()) {
-            ("fcm", Some(t)) => (st.fcm.as_ref(), t),
-            ("apns", Some(t)) => (st.apns.as_ref(), t),
+            ("fcm", Some(t)) => (
+                crate::tenants::provider_for(st, m.project_id, "fcm").await,
+                t,
+            ),
+            ("apns", Some(t)) => (
+                crate::tenants::provider_for(st, m.project_id, "apns").await,
+                t,
+            ),
             _ => (None, ""),
         };
     let Some(prov) = prov else {
