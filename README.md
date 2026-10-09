@@ -39,6 +39,18 @@ Para a consola web (e para CLI/Terraform). `PUSH_SECRET_KEY` (64 hex) cifra as c
 
 Um projecto de outra organização responde 404, como se não existisse. As acções de gestão ficam em `audit_log`.
 
+## Consola web
+
+`console/` (React + TypeScript, Vite): entrar/criar conta, organizações, projectos, chaves (o valor só aparece ao criar),
+aparelhos (ligados agora), mensagens (estado e erro, sem conteúdo), enviar mensagem de teste, credenciais FCM/APNs, e a
+visão geral com as últimas 24 h. Os botões seguem o papel da pessoa na organização.
+
+```bash
+(cd console && npm ci && npm run build)
+PUSH_CONSOLE_DIR=$PWD/console/dist cargo run      # o servidor serve a consola em /
+(cd console && npm run dev)                        # desenvolvimento, com proxy para 127.0.0.1:8480
+```
+
 ## Limites, métricas e operação
 
 | Variável | Para quê |
@@ -49,6 +61,7 @@ Um projecto de outra organização responde 404, como se não existisse. As acç
 | `PUSH_REDIS_URL` | limites partilhados entre instâncias (sem ela, cada instância conta sozinha) |
 | `PUSH_METRICS_TOKEN` | abre `/metrics` (Prometheus) a quem trouxer o token; vazio = fechado |
 | `PUSH_CONSOLE_OPEN_REGISTRATION=1` | qualquer pessoa pode criar conta na consola |
+| `PUSH_CONSOLE_DIR` | pasta `console/dist`: o servidor serve a consola em `/` |
 
 Limites por projecto: mensagens por segundo e por dia (um tópico gasta uma unidade por aparelho). Excedê-los dá `429` com
 `Retry-After`. Janela fixa de 1 s: pode passar até ao dobro do limite à volta da fronteira. Se o Redis falhar, deixa passar.

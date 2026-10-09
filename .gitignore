@@ -4,3 +4,5 @@ sdk/android/local.properties
 sdk/android/.gradle/
 sdk/android/**/build/
 sdk/android/.kotlin/
+console/node_modules/
+console/dist/

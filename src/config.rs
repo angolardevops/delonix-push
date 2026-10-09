@@ -28,6 +28,8 @@ pub struct Config {
     pub fcm_token_uri: String,
     pub apns_base: String,
     pub apns_sandbox_base: String,
+    /// Pasta com a consola web já construída (`console/dist`): se existir, o servidor serve-a em `/`.
+    pub console_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -50,6 +52,7 @@ impl Default for Config {
             fcm_token_uri: "https://oauth2.googleapis.com/token".into(),
             apns_base: "https://api.push.apple.com".into(),
             apns_sandbox_base: "https://api.sandbox.push.apple.com".into(),
+            console_dir: None,
         }
     }
 }
@@ -58,6 +61,9 @@ impl Config {
     pub fn from_env() -> Self {
         Self {
             admin_token: std::env::var("PUSH_ADMIN_TOKEN").unwrap_or_default(),
+            console_dir: std::env::var("PUSH_CONSOLE_DIR")
+                .ok()
+                .filter(|d| !d.is_empty()),
             console_open_registration: std::env::var("PUSH_CONSOLE_OPEN_REGISTRATION")
                 .is_ok_and(|v| v == "1"),
             ..Self::default()

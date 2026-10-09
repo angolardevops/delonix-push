@@ -30,7 +30,8 @@ async fn project_of(st: &AppState, h: &HeaderMap) -> Result<Uuid, (StatusCode, J
 }
 
 pub fn router(st: AppState) -> Router {
-    Router::new()
+    let console_dir = st.cfg.console_dir.clone();
+    let api = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .route("/admin/v1/projects/{id}/limits", put(set_limits))
@@ -46,7 +47,18 @@ pub fn router(st: AppState) -> Router {
         .route("/v1/messages/{id}", get(get_message))
         .route("/v1/connect", get(connect))
         .merge(crate::console::routes())
-        .with_state(st)
+        .with_state(st);
+    // A consola web (SPA): ficheiros estáticos, e qualquer outro caminho cai no index.html.
+    match console_dir {
+        Some(dir) => {
+            let index = std::path::Path::new(&dir).join("index.html");
+            api.fallback_service(
+                tower_http::services::ServeDir::new(dir)
+                    .fallback(tower_http::services::ServeFile::new(index)),
+            )
+        }
+        None => api,
+    }
 }
 
 #[derive(Deserialize)]
