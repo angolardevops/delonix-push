@@ -117,7 +117,7 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
         match v["type"].as_str() {
             Some("ack") => {
                 if let Some(id) = v["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()) {
-                    if store::ack(&st.db, dev.id, id).await.unwrap_or(false) {
+                    if st.batch.ack.submit((id, dev.id)).await == Some(true) {
                         crate::metrics::Metrics::inc(&st.metrics.acked);
                     }
                 }

@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod batch;
 pub mod cache;
 pub mod config;
 pub mod console;
@@ -48,12 +49,15 @@ pub struct AppState {
     pub metrics: Arc<metrics::Metrics>,
     /// Licenças dos envios em curso (ver `Config::max_inflight_sends`).
     pub send_permits: Arc<tokio::sync::Semaphore>,
+    /// Commit em grupo das escritas do caminho quente (ver `batch`).
+    pub batch: Arc<batch::Batchers>,
 }
 
 impl AppState {
     pub fn new(db: PgPool, cfg: config::Config) -> Self {
         let permits = cfg.max_inflight_sends;
         Self {
+            batch: Arc::new(batch::Batchers::new(db.clone())),
             db,
             node_id: uuid::Uuid::new_v4(),
             cfg: Arc::new(cfg),

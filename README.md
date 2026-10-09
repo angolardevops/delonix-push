@@ -80,7 +80,7 @@ mas **ainda não correu num aparelho/emulador**.
 
 ## Carga
 
-`loadtest/` + [docs/carga.md](docs/carga.md): o que se mediu (10 000 ligações a 1 000 msg/s com p99 de 2,8 ms numa instância) e, sobretudo, o que **não** se mediu.
+`loadtest/` + [docs/carga.md](docs/carga.md): o que se mediu (numa instância: 10 000 ligações a 1 000 msg/s com p99 de 2,8 ms; ~2 500 msg/s sustentadas com p99 de 50 ms) e, sobretudo, o que **não** se mediu.
 
 ## Licença e contribuições
 

@@ -81,6 +81,7 @@ da ligação própria no Android esbarra na política de bateria dos fabricantes
 ## Estado medido (2026-10-09)
 
 Ver [docs/carga.md](../carga.md). Em resumo, numa instância, em desenvolvimento: 10 000 ligações a 1 000 msg/s com p99 de 2,8 ms e
-123 MiB; teto sustentado de ~1 000–1 200 msg/s (limitado pela base), com recusa precoce (503) acima disso. As metas de «dezenas
-de milhares de ligações por nó» confirmam-se para ligações; a de «milhares de mensagens por segundo» **só se atinge com várias
-instâncias e a fila quente fora do Postgres**, que continuam por fazer e por medir.
+123 MiB; teto sustentado de ~2 500 msg/s (p99 50 ms) e pico de ~3 300 msg/s numa instância, depois do commit em grupo (antes eram
+~1 100), com recusa precoce (503) acima disso. As metas de «dezenas de milhares de ligações por nó» e «milhares de mensagens por
+segundo» confirmam-se **numa instância e neste ambiente**; a escala horizontal (várias instâncias) continua por medir, e a fila
+quente fora do Postgres deixa de ser urgente (fica para quando o Postgres voltar a ser o teto).

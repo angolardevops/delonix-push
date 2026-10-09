@@ -31,6 +31,8 @@ pub struct Message {
     pub expires_at: DateTime<Utc>,
 }
 
+pub(crate) const MSG_COLS_PREFIXED: &str = "m.id, m.project_id, m.device_id, m.collapse_key, m.priority, m.payload, m.state, m.attempts, m.last_error, m.created_at, m.expires_at";
+
 const MSG_COLS: &str = "id, project_id, device_id, collapse_key, priority, payload, state, attempts, last_error, created_at, expires_at";
 
 pub async fn create_project(db: &PgPool, name: &str) -> sqlx::Result<(Uuid, String)> {

@@ -324,20 +324,37 @@ pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
     let mut ids = Vec::with_capacity(targets.len());
     for d in &targets {
         // Num tópico, a chave de idempotência é por aparelho: o mesmo pedido repetido não duplica.
-        let (id, nova) = store::enqueue(
-            &st.db,
-            &store::NewMessage {
+        let (id, nova) = if b.idempotency_key.is_none() && b.collapse_key.is_none() {
+            // Caminho comum: grava-se em grupo com as outras mensagens que chegam ao mesmo tempo (ver `batch`).
+            let id = Uuid::new_v4();
+            let row = crate::batch::NewRow {
+                id,
                 project: p,
                 device: *d,
-                collapse_key: b.collapse_key.as_deref(),
-                priority: prio,
-                payload: &b.payload,
-                idempotency_key: b.idempotency_key.as_deref(),
-                ttl_secs: ttl,
-            },
-        )
-        .await
-        .map_err(ise)?;
+                priority: prio.to_string(),
+                payload: b.payload.clone(),
+                ttl_secs: ttl as f64,
+            };
+            if st.batch.insert.submit(row).await != Some(true) {
+                return Err(ise("falha a gravar o lote de mensagens"));
+            }
+            (id, true)
+        } else {
+            store::enqueue(
+                &st.db,
+                &store::NewMessage {
+                    project: p,
+                    device: *d,
+                    collapse_key: b.collapse_key.as_deref(),
+                    priority: prio,
+                    payload: &b.payload,
+                    idempotency_key: b.idempotency_key.as_deref(),
+                    ttl_secs: ttl,
+                },
+            )
+            .await
+            .map_err(ise)?
+        };
         if nova {
             dispatch::deliver_to(st, id, *d).await;
         }

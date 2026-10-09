@@ -61,7 +61,7 @@ pub async fn deliver_local(st: &AppState, id: Uuid, device: Uuid) {
         return;
     }
     let lease = st.cfg.ack_timeout.as_secs_f64();
-    let Ok(Some(m)) = store::claim_and_send(&st.db, id, lease).await else {
+    let Some(Some(m)) = st.batch.claim_send.submit((id, lease)).await else {
         return;
     };
     if m.attempts > st.cfg.max_attempts {
