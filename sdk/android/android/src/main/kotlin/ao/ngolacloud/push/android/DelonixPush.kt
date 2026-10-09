@@ -33,9 +33,20 @@ object DelonixPush {
 
     fun isConfigured(context: Context) = Store.load(context) != null
 
-    fun start(context: Context) {
+    /**
+     * Arranca o serviço. No Android 12+ só é permitido com a app visível, a partir de `BOOT_COMPLETED`, ou
+     * quando acorda por uma mensagem FCM de prioridade alta; de um receptor em segundo plano o sistema recusa
+     * (`ForegroundServiceStartNotAllowedException`). Devolve `false` nesse caso, sem deitar o processo abaixo:
+     * fica «ligado» e o próximo momento permitido (abrir a app, reiniciar) arranca-o.
+     */
+    fun start(context: Context): Boolean {
         Store.setEnabled(context, true)
-        context.startForegroundService(Intent(context, PushService::class.java))
+        return try {
+            context.startForegroundService(Intent(context, PushService::class.java))
+            true
+        } catch (e: IllegalStateException) { // inclui ForegroundServiceStartNotAllowedException
+            false
+        }
     }
 
     fun stop(context: Context) {
