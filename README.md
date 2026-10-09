@@ -39,6 +39,20 @@ Para a consola web (e para CLI/Terraform). `PUSH_SECRET_KEY` (64 hex) cifra as c
 
 Um projecto de outra organização responde 404, como se não existisse. As acções de gestão ficam em `audit_log`.
 
+## Limites, métricas e operação
+
+| Variável | Para quê |
+|---|---|
+| `DATABASE_URL`, `PUSH_BIND` | base e endereço |
+| `PUSH_ADMIN_TOKEN` | plano de operador: criar projectos, ajustar limites (`PUT /admin/v1/projects/{id}/limits`) |
+| `PUSH_SECRET_KEY` | 64 hex: cifra as credenciais FCM/APNs |
+| `PUSH_REDIS_URL` | limites partilhados entre instâncias (sem ela, cada instância conta sozinha) |
+| `PUSH_METRICS_TOKEN` | abre `/metrics` (Prometheus) a quem trouxer o token; vazio = fechado |
+| `PUSH_CONSOLE_OPEN_REGISTRATION=1` | qualquer pessoa pode criar conta na consola |
+
+Limites por projecto: mensagens por segundo e por dia (um tópico gasta uma unidade por aparelho). Excedê-los dá `429` com
+`Retry-After`. Janela fixa de 1 s: pode passar até ao dobro do limite à volta da fronteira. Se o Redis falhar, deixa passar.
+
 ## SDK Android
 
 `sdk/android` (Gradle): `:core` é Kotlin/JVM puro (`PushClient`: WebSocket com ack, deduplicação por `id`, recuo

@@ -32,6 +32,8 @@ async fn project_of(st: &AppState, h: &HeaderMap) -> Result<Uuid, (StatusCode, J
 pub fn router(st: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/metrics", get(metrics))
+        .route("/admin/v1/projects/{id}/limits", put(set_limits))
         .route("/admin/v1/projects", post(create_project))
         .route("/v1/devices", post(create_device))
         .route("/v1/devices/{id}", delete(revoke_device))
@@ -256,6 +258,33 @@ pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
             ))
         }
     };
+    // Limites do projecto: segundos e dia. Um tópico gasta uma unidade por aparelho.
+    let (rate, quota): (Option<i32>, Option<i64>) =
+        sqlx::query_as("SELECT rate_per_sec, daily_quota FROM projects WHERE id = $1")
+            .bind(p)
+            .fetch_one(&st.db)
+            .await
+            .map_err(ise)?;
+    let rate = rate.map_or(st.cfg.default_rate_per_sec, |v| v as u32);
+    let quota = quota.map_or(st.cfg.default_daily_quota, |v| v as u64);
+    if let Err(r) = st.limiter.check(p, targets.len() as u64, rate, quota).await {
+        crate::metrics::Metrics::inc(&st.metrics.rate_limited);
+        let (why, secs) = match r {
+            crate::limits::Refused::RatePerSec { retry_after_secs } => (
+                "limite de mensagens por segundo do projecto",
+                retry_after_secs,
+            ),
+            crate::limits::Refused::DailyQuota { retry_after_secs } => {
+                ("quota diária do projecto esgotada", retry_after_secs)
+            }
+        };
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, secs.to_string())],
+            Json(json!({ "error": why, "retry_after_secs": secs })),
+        )
+            .into_response());
+    }
     let mut ids = Vec::with_capacity(targets.len());
     for d in &targets {
         // Num tópico, a chave de idempotência é por aparelho: o mesmo pedido repetido não duplica.
@@ -278,6 +307,9 @@ pub(crate) async fn do_send(st: &AppState, p: Uuid, b: SendBody) -> R {
         }
         ids.push(id);
     }
+    st.metrics
+        .enqueued
+        .fetch_add(ids.len() as u64, std::sync::atomic::Ordering::Relaxed);
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({ "message_ids": ids, "accepted": ids.len() })),
@@ -306,4 +338,58 @@ async fn connect(State(st): State<AppState>, h: HeaderMap, ws: WebSocketUpgrade)
         .map_err(ise)?
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "aparelho inválido"))?;
     Ok(ws.on_upgrade(move |s| gateway::serve(st, dev, s)))
+}
+
+async fn metrics(State(st): State<AppState>, h: HeaderMap) -> axum::response::Response {
+    let ok = !st.cfg.metrics_token.is_empty()
+        && auth::bearer(&h).is_some_and(|t| {
+            subtle::ConstantTimeEq::ct_eq(t.as_bytes(), st.cfg.metrics_token.as_bytes()).into()
+        });
+    if !ok {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        st.metrics.render(st.gateway.len()),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct Limits {
+    rate_per_sec: Option<i32>,
+    daily_quota: Option<i64>,
+}
+
+/// O operador da plataforma ajusta os limites de um projecto (plano). Um inquilino não os altera.
+async fn set_limits(
+    State(st): State<AppState>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(b): Json<Limits>,
+) -> R {
+    if !auth::admin_ok(&h, &st.cfg.admin_token) {
+        return Err(err(StatusCode::UNAUTHORIZED, "administração negada"));
+    }
+    if b.rate_per_sec.is_some_and(|v| v <= 0) || b.daily_quota.is_some_and(|v| v <= 0) {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "os limites têm de ser positivos",
+        ));
+    }
+    let n = sqlx::query("UPDATE projects SET rate_per_sec = $2, daily_quota = $3 WHERE id = $1")
+        .bind(id)
+        .bind(b.rate_per_sec)
+        .bind(b.daily_quota)
+        .execute(&st.db)
+        .await
+        .map_err(ise)?
+        .rows_affected();
+    if n == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "projecto desconhecido"));
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

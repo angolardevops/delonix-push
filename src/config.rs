@@ -17,6 +17,11 @@ pub struct Config {
     /// Chave de instalação (32 bytes) com que se cifram as credenciais dos fornecedores em repouso
     /// (`PUSH_SECRET_KEY`, 64 hex). Sem ela as credenciais por projecto não se guardam (503).
     pub secret_key: Option<[u8; 32]>,
+    /// Limites por omissão de cada projecto (ajustáveis por projecto pelo operador): mensagens por segundo e por dia.
+    pub default_rate_per_sec: u32,
+    pub default_daily_quota: u64,
+    /// `/metrics` só responde com este token (`Authorization: Bearer`); vazio = fechado.
+    pub metrics_token: String,
     /// Destinos dos fornecedores. Fixos em produção: NUNCA vêm das credenciais que um inquilino carrega
     /// (senão um inquilino fazia o servidor chamar o URL que quisesse). Os testes apontam-nos a servidores de papel.
     pub fcm_base: String,
@@ -38,6 +43,9 @@ impl Default for Config {
             max_fanout: 1000,
             console_open_registration: false,
             secret_key: None,
+            default_rate_per_sec: 500,
+            default_daily_quota: 5_000_000,
+            metrics_token: String::new(),
             fcm_base: "https://fcm.googleapis.com".into(),
             fcm_token_uri: "https://oauth2.googleapis.com/token".into(),
             apns_base: "https://api.push.apple.com".into(),

@@ -112,6 +112,7 @@ async fn deliver_provider(st: &AppState, id: Uuid) {
     match prov.send(token, &out).await {
         Ok(()) => {
             let _ = store::mark_accepted(&st.db, m.id).await;
+            crate::metrics::Metrics::inc(&st.metrics.provider_accepted);
         }
         Err(SendError::InvalidToken) => {
             // O token morreu: esquece-se, e a mensagem espera pela ligação própria.
@@ -119,6 +120,7 @@ async fn deliver_provider(st: &AppState, id: Uuid) {
             let _ = store::retry_later(&st.db, m.id, "token do fornecedor inválido", 0.0).await;
         }
         Err(SendError::Permanent(e)) => {
+            crate::metrics::Metrics::inc(&st.metrics.provider_failed);
             let _ = store::mark_failed(&st.db, m.id, &e).await;
         }
         Err(SendError::Transient(e)) => {

@@ -13,6 +13,8 @@ pub mod config;
 pub mod console;
 pub mod dispatch;
 pub mod gateway;
+pub mod limits;
+pub mod metrics;
 pub mod providers;
 pub mod seal;
 pub mod store;
@@ -35,6 +37,8 @@ pub struct AppState {
     pub apns: Option<Arc<dyn Provider>>,
     /// Fornecedores construídos a partir das credenciais de cada projecto (ver `tenants`).
     pub provider_cache: Arc<tenants::Cache>,
+    pub limiter: Arc<limits::Limiter>,
+    pub metrics: Arc<metrics::Metrics>,
 }
 
 impl AppState {
@@ -47,6 +51,8 @@ impl AppState {
             fcm: None,
             apns: None,
             provider_cache: Arc::default(),
+            limiter: Arc::new(limits::Limiter::memory()),
+            metrics: Arc::default(),
         }
     }
 }

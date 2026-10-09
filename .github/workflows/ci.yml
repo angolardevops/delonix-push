@@ -13,8 +13,12 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U delonix" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
     env:
       DATABASE_URL: postgres://delonix:delonix_dev@localhost:5432/delonix_push
+      TEST_REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

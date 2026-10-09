@@ -15,7 +15,14 @@ async fn main() {
         .run(&db)
         .await
         .expect("migrações");
-    let st = AppState::new(db, Config::from_env());
+    let mut st = AppState::new(db, Config::from_env());
+    if let Ok(url) = std::env::var("PUSH_REDIS_URL") {
+        st.limiter = std::sync::Arc::new(
+            delonix_push::limits::Limiter::redis(&url)
+                .await
+                .expect("Redis"),
+        );
+    }
     tokio::spawn(dispatch::run_worker(st.clone()));
     tokio::spawn(dispatch::run_listener(st.clone()));
     let bind = std::env::var("PUSH_BIND").unwrap_or_else(|_| "0.0.0.0:8480".into());

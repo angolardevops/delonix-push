@@ -415,9 +415,19 @@ async fn get_project(State(st): State<AppState>, h: HeaderMap, Path(id): Path<Uu
     .fetch_one(&st.db)
     .await
     .map_err(ise)?;
-    Ok(Json(
-        json!({ "id": p, "org_id": org, "name": name, "devices": devices, "connected": connected }),
-    )
+    let (rate, quota): (Option<i32>, Option<i64>) =
+        sqlx::query_as("SELECT rate_per_sec, daily_quota FROM projects WHERE id = $1")
+            .bind(p)
+            .fetch_one(&st.db)
+            .await
+            .map_err(ise)?;
+    Ok(Json(json!({
+        "id": p, "org_id": org, "name": name, "devices": devices, "connected": connected,
+        "limits": {
+            "rate_per_sec": rate.map_or(i64::from(st.cfg.default_rate_per_sec), i64::from),
+            "daily_quota": quota.unwrap_or(st.cfg.default_daily_quota as i64),
+        },
+    }))
     .into_response())
 }
 

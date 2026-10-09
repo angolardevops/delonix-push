@@ -46,6 +46,14 @@ impl Registry {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.conns.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn is_connected(&self, dev: Uuid) -> bool {
         self.conns.lock().unwrap().contains_key(&dev)
     }
@@ -57,6 +65,7 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(256);
     let conn = st.gateway.attach(dev.id, tx);
+    crate::metrics::Metrics::inc(&st.metrics.ws_opened);
     store::touch_device(&st.db, dev.id).await;
     let _ = store::presence_set(&st.db, dev.id, st.node_id).await;
 
@@ -108,7 +117,9 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
         match v["type"].as_str() {
             Some("ack") => {
                 if let Some(id) = v["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()) {
-                    let _ = store::ack(&st.db, dev.id, id).await;
+                    if store::ack(&st.db, dev.id, id).await.unwrap_or(false) {
+                        crate::metrics::Metrics::inc(&st.metrics.acked);
+                    }
                 }
             }
             Some("ping") => {
@@ -120,6 +131,7 @@ pub async fn serve(st: AppState, dev: Device, socket: WebSocket) {
         }
     }
     st.gateway.detach(dev.id, conn);
+    crate::metrics::Metrics::inc(&st.metrics.ws_closed);
     beat.abort();
     // Só se não houve reconexão nesta mesma instância entretanto (a ligação nova já registou a sua presença).
     if !st.gateway.is_connected(dev.id) {
