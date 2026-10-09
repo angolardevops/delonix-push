@@ -43,3 +43,11 @@ e é entregue quando o aparelho ligar.
 - Difusão de tópico limitada a 1000 aparelhos por pedido, síncrona.
 - Sem limite de taxa por projecto, sem métricas, sem TLS próprio (atrás do edge), sem chaves de cliente públicas.
 - `payload` ≤ 4096 bytes. FCM só aceita strings: o *payload* vai serializado em `data.payload`.
+
+## SDK Android (medido)
+
+`:core` provado contra um servidor de papel (6 testes) e contra o **servidor Rust real** (2 testes em `e2e.sh`: mensagem
+em fila entregue ao ligar com ack, e segredo revogado → o cliente pára). O primeiro ensaio apanhou um defeito: o cliente
+não respondia ao `close` do servidor (`onClosing`), logo nunca voltava a ligar depois de uma queda limpa.
+**Não provado:** o `PushService` num Android (foreground service tipo `specialUse`, que a Google Play pede para justificar,
+Doze, fabricantes que matam serviços), e o segredo guardado em `SharedPreferences` privadas, não no Keystore.

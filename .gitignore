@@ -1,2 +1,6 @@
 target/
 .env
+sdk/android/local.properties
+sdk/android/.gradle/
+sdk/android/**/build/
+sdk/android/.kotlin/

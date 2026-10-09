@@ -21,6 +21,14 @@ Estados de uma mensagem: `queued → sent → delivered` (ligação própria), `
 
 Testes: `DATABASE_URL=… cargo test` (Postgres; `sqlx::test`).
 
+## SDK Android
+
+`sdk/android` (Gradle): `:core` é Kotlin/JVM puro (`PushClient`: WebSocket com ack, deduplicação por `id`, recuo
+exponencial com *jitter*, *heartbeat*, pára se o segredo for revogado) e `:android` junta-lhe um serviço em
+primeiro plano (`PushService`), `BootReceiver` e a fachada `DelonixPush`. Testes: `./gradlew :core:test` (servidor de
+papel) e `sdk/android/e2e.sh` (contra o binário Rust real, com base nova). O serviço Android compila (`assembleDebug`)
+mas **ainda não correu num aparelho/emulador**.
+
 ## Licença e contribuições
 
 [Apache-2.0](LICENSE). Contribuições são bem-vindas por pull request; correm `cargo fmt --check`, `cargo clippy --all-targets`
